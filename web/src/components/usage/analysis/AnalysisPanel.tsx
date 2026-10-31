@@ -793,14 +793,13 @@ function CostHeaderHint({ show, label }: { show: boolean; label: string }) {
   return show ? <small className={styles.costHeaderHint}>{label}</small> : null;
 }
 
-function AnalysisCardHeader({ title, subtitle, showPricingHint, hint }: { title: string; subtitle: string; showPricingHint: boolean; hint: string }) {
+function AnalysisCardHeader({ title, showPricingHint, hint }: { title: string; showPricingHint: boolean; hint: string }) {
   return (
     <div className={`${styles.cardHeader} keeper-card-heading`}>
       <div className={`${styles.cardTitleLine} keeper-card-title-track`}>
         <h2 className="keeper-card-title">{title}</h2>
         <CostHeaderHint show={showPricingHint} label={hint} />
       </div>
-      <p className="keeper-card-subtitle">{subtitle}</p>
     </div>
   );
 }
@@ -933,7 +932,6 @@ function TokenUsageChart({ rows, summary, breakdown, loading, isDark, isMobile }
     <section className={`${styles.analysisCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_token_usage_title')}
-        subtitle={t('usage_stats.analysis_token_usage_subtitle')}
         showPricingHint={hasUnavailableCost}
         hint={t('usage_stats.cost_need_price')}
       />
@@ -1003,7 +1001,7 @@ function TopModelsCard({ modelUsage, composition, granularity, timezone, loading
 
   return (
     <section className={`${styles.analysisCard} ${styles.pairedChartCard} ${styles.topModelsCard} keeper-card-surface`}>
-      <AnalysisCardHeader title={t('usage_stats.analysis_top_models_title')} subtitle={t('usage_stats.analysis_top_models_subtitle')} showPricingHint={false} hint="" />
+      <AnalysisCardHeader title={t('usage_stats.analysis_top_models_title')} showPricingHint={false} hint="" />
       {loading ? <div className={styles.emptyState}>{t('common.loading')}</div> : view.series.length === 0 ? <div className={styles.emptyState}>{t('usage_stats.no_data')}</div> : (
         <>
           <div className={styles.analysisChartSurface}>
@@ -1046,7 +1044,6 @@ function LatencyDiagnosticsCard({ diagnostics, loading, error, isDark, isMobile 
     <section className={`${styles.analysisCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_latency_title')}
-        subtitle={t('usage_stats.analysis_latency_subtitle')}
         showPricingHint={false}
         hint=""
       />
@@ -1143,7 +1140,6 @@ function CompositionPanel({ tabs, loading, isDark, windowMinutes }: { tabs: Comp
   return (
     <section className={`${styles.analysisCard} ${styles.pairedChartCard} keeper-card-surface`}>
       <AnalysisCardHeader title={t('usage_stats.analysis_composition_title')}
-        subtitle={tabs.length === 1 ? t('usage_stats.analysis_composition_single_dimension_subtitle') : t('usage_stats.analysis_composition_subtitle')}
         showPricingHint={hasUnavailableCost} hint={t('usage_stats.cost_need_price')} />
       <div className={styles.pairedChartToolbar}>
         <div className={styles.compositionTabs} role="tablist" aria-label={t('usage_stats.analysis_composition_title')}>
@@ -1441,7 +1437,6 @@ function ModelEfficiencyCard({ rows, loading, isDark, isMobile }: { rows: Analys
     <section className={`${styles.analysisCard} keeper-card-surface`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_model_efficiency_title')}
-        subtitle={t('usage_stats.analysis_model_efficiency_subtitle')}
         showPricingHint={hasUnavailableCost}
         hint={t('usage_stats.cost_need_price')}
       />
@@ -1537,7 +1532,6 @@ function Heatmap({ cells, apiKeys, apiKeyLabels, models, rowDualCosts, columnDua
     <section className={`${styles.analysisCard} ${styles.heatmapCard} keeper-card-surface ${isDark ? styles.heatmapCardDark : styles.heatmapCardLight}`}>
       <AnalysisCardHeader
         title={t('usage_stats.analysis_heatmap_title')}
-        subtitle={t('usage_stats.analysis_heatmap_subtitle')}
         showPricingHint={hasUnavailableCost}
         hint={t('usage_stats.cost_need_price')}
       />

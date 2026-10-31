@@ -26,7 +26,6 @@ import {
   IconDatabaseArrowDown,
   IconDatabaseArrowUp,
   IconDownload,
-  IconInfo,
   IconSettings,
 } from '@/components/ui/icons';
 import type { UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption } from '@/lib/types';
@@ -172,7 +171,6 @@ type RequestEventRow = {
   requestTier: string;
   effectiveTier: string;
   responseTier: string;
-  tierMismatch: boolean;
   requestType: string;
   endpoint: string;
   sourceRaw: string;
@@ -692,7 +690,6 @@ export function RequestEventsDetailsCard({
         requestTier,
         effectiveTier,
         responseTier,
-        tierMismatch: !!effectiveTier && !!responseTier && effectiveTier !== responseTier,
         requestType: endpointFields.requestType,
         endpoint: endpointFields.endpoint,
         sourceRaw: sourceRaw || '-',
@@ -982,7 +979,6 @@ export function RequestEventsDetailsCard({
               onBlur={(event) => handleRequestEventsTooltipBlur(event.currentTarget)}
             >
               {row.speedMode}
-              {row.tierMismatch && <IconInfo className={styles.requestEventsTierMismatch} size={14} role="img" aria-hidden={false} aria-label={t('usage_stats.service_tier_mismatch')} />}
             </td>
           );
         },
