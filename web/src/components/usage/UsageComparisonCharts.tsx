@@ -1,7 +1,8 @@
+import { disambiguateTimeLabels } from '@/utils/usage/timeLabels';
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/chartjs';
-import { Line } from 'react-chartjs-2';
+import { Line } from './charts/UsageChart';
 import type { Chart as ChartJS, ChartData, ChartOptions, TooltipModel } from 'chart.js';
 import { dualCostLines } from './DualCosts';
 import type { UsageComparisonItem, UsageOverviewComparisons } from '@/lib/types';
@@ -9,7 +10,7 @@ import { Card } from '@/components/ui/Card';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { PortalTooltip, usePortalTooltip } from '@/components/ui/PortalTooltip';
 import { formatCompactNumber } from '@/utils/usage';
-import { getUsageChartTheme } from '@/utils/usage/chartConfig';
+import { buildUsageChartTooltipStyle, getUsageChartTheme } from '@/utils/usage/chartConfig';
 import { buildComparisonView, formatComparisonBucket, type ComparisonRow } from './usageComparisonData';
 import styles from './UsageComparisonCharts.module.scss';
 import usageStyles from '@/pages/UsagePage.module.scss';
@@ -17,8 +18,8 @@ import usageStyles from '@/pages/UsagePage.module.scss';
 const EMPTY: UsageComparisonItem[] = [];
 const EMPTY_BUCKETS: string[] = [];
 const COLORS = ['#cfe3fc', '#387ff5', '#234f91', '#8950ee', '#b69af5', '#94a3b8'];
-type UsageDimension = 'models' | 'api_keys' | 'auth_files' | 'ai_providers';
-const DIMENSIONS: readonly UsageDimension[] = ['models', 'api_keys', 'auth_files', 'ai_providers'];
+type UsageDimension = 'models' | 'api_keys' | 'credentials' | 'ai_providers';
+const DIMENSIONS: readonly UsageDimension[] = ['models', 'api_keys', 'credentials', 'ai_providers'];
 const colorFor = (row: ComparisonRow, index: number) => COLORS[row.other ? 5 : index];
 const formatShare = (value: number | null) => value === null ? '—' : `${value.toFixed(1)}%`;
 
@@ -35,7 +36,7 @@ export function UsageComparisonCharts({ comparisons, loading, keyViewer = false,
   const { t } = useTranslation();
   const headingId = useId();
   const [selected, setSelected] = useState<UsageDimension>('models');
-  const dimension = keyViewer && (selected === 'auth_files' || selected === 'ai_providers') ? 'models' : selected;
+  const dimension = keyViewer && (selected === 'credentials' || selected === 'ai_providers') ? 'models' : selected;
   const dimensions = keyViewer ? DIMENSIONS.slice(0, 2) : DIMENSIONS;
   const items = comparisons?.[dimension] ?? EMPTY;
   const total = items.reduce((sum, item) => sum + item.total_tokens, 0);
@@ -52,7 +53,7 @@ export function UsageComparisonCharts({ comparisons, loading, keyViewer = false,
         </div>
       </div>
     </div>
-    <Card title={t('usage_stats.comparison_token_trend')} className={styles.card} extra={
+    <Card title={t('usage_stats.comparison_token_trend')} subtitle={t('usage_stats.comparison_subtitle')} className={styles.card} extra={
       <span className={styles.total} data-comparison-total><strong>{items.length || !loading ? formatCompactNumber(total) : '—'}</strong><span>{t('usage_stats.comparison_tokens')}</span></span>
     }>
       <ComparisonArea key={dimension} dimension={dimension} comparisons={comparisons} loading={loading} isDark={isDark} isMobile={isMobile} />
@@ -66,8 +67,8 @@ function ComparisonArea({ dimension, comparisons, loading, isDark, isMobile }: C
   const buckets = comparisons?.buckets ?? EMPTY_BUCKETS;
   const view = useMemo(() => buildComparisonView(items, t('usage_stats.comparison_others')), [items, t]);
   const granularity = comparisons?.granularity ?? 'hourly';
-  const labels = useMemo(() => buckets.map(bucket => formatComparisonBucket(bucket, granularity, comparisons?.timezone, i18n.language)), [buckets, granularity, comparisons?.timezone, i18n.language]);
-  const fullLabels = useMemo(() => buckets.map(bucket => formatComparisonBucket(bucket, granularity, comparisons?.timezone, i18n.language, true)), [buckets, granularity, comparisons?.timezone, i18n.language]);
+  const labels = useMemo(() => disambiguateTimeLabels(buckets, comparisons?.timezone, bucket => formatComparisonBucket(bucket, granularity, comparisons?.timezone, i18n.language)), [buckets, granularity, comparisons?.timezone, i18n.language]);
+  const fullLabels = useMemo(() => disambiguateTimeLabels(buckets, comparisons?.timezone, bucket => formatComparisonBucket(bucket, granularity, comparisons?.timezone, i18n.language, true)), [buckets, granularity, comparisons?.timezone, i18n.language]);
   const [hidden, setHidden] = useState<Set<string>>(() => new Set());
   const chartRef = useRef<ChartJS<'line'>>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -79,7 +80,11 @@ function ComparisonArea({ dimension, comparisons, loading, isDark, isMobile }: C
     view.rows.reduce((sum, row) => sum + (hidden.has(row.key) ? 0 : row.token_series?.[index] ?? 0), 0)), 0), [buckets, view.rows, hidden]);
 
   useEffect(() => {
+    // 明细只在数据变化时清理，切换曲线仍保留当前明细提示。
     dismiss();
+  }, [items, buckets, dismiss]);
+
+  useEffect(() => {
     if (tooltipRef.current) tooltipRef.current.hidden = true;
     const chart = chartRef.current;
     if (chart) {
@@ -87,7 +92,7 @@ function ComparisonArea({ dimension, comparisons, loading, isDark, isMobile }: C
       chart.tooltip?.setActiveElements([], {x: 0, y: 0});
       chart.update('none');
     }
-  }, [items, buckets, hidden, dismiss]);
+  }, [items, buckets, hidden]);
 
   const data = useMemo<ChartData<'line', number[], string>>(() => ({
     labels,
@@ -104,7 +109,7 @@ function ComparisonArea({ dimension, comparisons, loading, isDark, isMobile }: C
   }), [labels, buckets, view.rows, hidden, theme.tooltipBg]);
 
   const options = useMemo<ChartOptions<'line'>>(() => ({
-    responsive: true, maintainAspectRatio: false, animation: false,
+    responsive: true, maintainAspectRatio: false,
     interaction: {mode: 'index', intersect: false},
     layout: {padding: {top: 12, right: 4}},
     plugins: {
@@ -177,28 +182,25 @@ function ComparisonArea({ dimension, comparisons, loading, isDark, isMobile }: C
   };
   const empty = loading && items.length === 0 ? <><LoadingSpinner size={18} />{t('common.loading')}</> : t('usage_stats.comparison_empty');
   return <div data-comparison={dimension} aria-busy={loading}>
-    {fullLabels.length > 0 && <div className={styles.topline}><span className={styles.range}>{fullLabels[0]}{fullLabels.length > 1 ? ` – ${fullLabels[fullLabels.length - 1]}` : ''}</span></div>}
     <div className={styles.chart}>
       {view.total > 0 && buckets.length > 0 ? <Line ref={chartRef} data={data} options={options} datasetIdKey="key" role="img"
         aria-label={`${t('usage_stats.comparison_token_trend')} · ${t(`usage_stats.overview_realtime_dimension_${dimension}`)} · ${t('usage_stats.comparison_chart_keyboard')}`}
         tabIndex={0} onFocus={() => selectBucket(buckets.length - 1)} onKeyDown={onChartKeyDown}
         onBlur={() => { if (tooltipRef.current) tooltipRef.current.hidden = true; }} /> : <div className={styles.empty}>{empty}</div>}
-      <div ref={tooltipRef} className={styles.tooltip} role="tooltip" hidden />
-    </div>
-    <div className={styles.legend}>
-      {view.rows.map((row, index) => <button type="button" key={row.key} data-series-key={row.key} aria-pressed={!hidden.has(row.key)}
-        onClick={() => setHidden(current => { const next = new Set(current); if (next.has(row.key)) next.delete(row.key); else next.add(row.key); return next; })}>
-        <i style={{background: colorFor(row, index)}} />{row.label}
-      </button>)}
+      <div ref={tooltipRef} className={styles.tooltip} role="tooltip" hidden style={{ backgroundColor: theme.tooltipBg, color: theme.tooltipBody, borderColor: theme.tooltipBorder, padding: buildUsageChartTooltipStyle(theme).padding }} />
     </div>
     {view.rows.length > 0 && <div className={styles.detailsContainer}><div className={styles.details} style={{'--detail-count': view.rows.length} as CSSProperties}>
-      {view.rows.map((row, index) => <button type="button" key={row.key} data-comparison-entry={row.key} aria-label={metricLines(row).join(', ')}
+      {view.rows.map((row, index) => <button type="button" key={row.key} data-comparison-entry={row.key} data-series-key={row.key} aria-pressed={!hidden.has(row.key)} aria-label={metricLines(row).join(', ')}
         style={{'--series-color': colorFor(row, index)} as CSSProperties}
         onMouseEnter={event => detailsTooltip.showOnMouseEnter(metricLines(row), event.currentTarget)}
         onMouseLeave={event => detailsTooltip.hideOnMouseLeave(event.currentTarget)}
         onFocus={event => detailsTooltip.showOnFocus(metricLines(row), event.currentTarget)}
         onBlur={event => detailsTooltip.hideOnBlur(event.currentTarget)}
-        onClick={event => detailsTooltip.showOnFocus(metricLines(row), event.currentTarget)}
+        onClick={event => {
+          // 触屏点击未必产生 focus，需要显式打开明细。
+          detailsTooltip.showOnFocus(metricLines(row), event.currentTarget);
+          setHidden(current => { const next = new Set(current); if (next.has(row.key)) next.delete(row.key); else next.add(row.key); return next; });
+        }}
         onKeyDown={event => { if (event.key === 'Escape') dismiss(); }}>
         <span className={styles.detailName}><i /><span>{row.label}</span></span>
         <span className={styles.detailValue}>{formatCompactNumber(row.total_tokens)}<small>{formatShare(row.share)}</small></span>

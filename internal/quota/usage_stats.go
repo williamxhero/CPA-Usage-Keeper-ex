@@ -24,20 +24,15 @@ type usageWindowStatsProvider interface {
 	SumGroupsByAuthIndex(context.Context, string, time.Time, *time.Time, repository.UsageWindowStatsGrouper) (repository.UsageWindowGroupedStats, error)
 }
 
+// attachWindowUsageStats pins the injected current catalog for this response.
+// Stored consumers must use a separate provider, never a zero/current resolver heuristic.
 func (s *Service) attachWindowUsageStats(ctx context.Context, authIndex string, response CheckResponse, now time.Time) CheckResponse {
-	if s == nil {
-		return response
-	}
-	calculator, err := repository.NewUsageWindowStatsCalculator(ctx, s.db, s.pricing.NewResolver())
-	if err != nil {
-		return response
-	}
-	return s.attachWindowUsageStatsWithProvider(ctx, authIndex, response, now, calculator)
+	return s.attachWindowUsageStatsWithProvider(ctx, authIndex, response, now, s.usageHeaderWindowStatsProvider())
 }
 
 func (s *Service) attachWindowUsageStatsWithProvider(ctx context.Context, authIndex string, response CheckResponse, now time.Time, statsProvider usageWindowStatsProvider) CheckResponse {
 	// quota 为空时没有可补充的窗口用量，直接返回原响应。
-	if len(response.Quota) == 0 || statsProvider == nil {
+	if len(response.Quota) == 0 {
 		// 返回原响应，避免后续 map 和数据库查询开销。
 		return response
 	}
@@ -55,6 +50,11 @@ func (s *Service) attachWindowUsageStatsWithProvider(ctx context.Context, authIn
 			response.Quota[index].WindowUsageCost = nil
 			response.Quota[index].DualCosts = nil
 			response.Quota[index].PricingSnapshotID = ""
+			response.Quota[index].WindowCostSource = ""
+			response.Quota[index].StoredCostAvailable = nil
+			if statsProvider == nil {
+				continue
+			}
 			windowStart, windowEnd, windowOK := quotaRowUsageWindow(response.Quota[index], now)
 			if !windowOK {
 				continue
@@ -85,13 +85,7 @@ func (s *Service) attachWindowUsageStatsWithProvider(ctx context.Context, authIn
 			if !stats.CostAvailable {
 				continue
 			}
-			tokens := stats.Tokens
-			cost := stats.Cost
-			response.Quota[index].WindowUsageTokens = &tokens
-			response.Quota[index].WindowUsageCost = &cost
-			dual := stats.DualCosts.Normalized()
-			response.Quota[index].DualCosts = &dual
-			response.Quota[index].PricingSnapshotID = stats.PricingSnapshotID
+			attachLocalWindowCosts(&response.Quota[index], stats, statsProvider)
 			continue
 		}
 		// Pro 等上游可能已经返回窗口 token/cost；非 window scope 不用本地 auth 级统计兜底。
@@ -104,6 +98,11 @@ func (s *Service) attachWindowUsageStatsWithProvider(ctx context.Context, authIn
 		response.Quota[index].WindowUsageCost = nil
 		response.Quota[index].DualCosts = nil
 		response.Quota[index].PricingSnapshotID = ""
+		response.Quota[index].WindowCostSource = ""
+		response.Quota[index].StoredCostAvailable = nil
+		if statsProvider == nil {
+			continue
+		}
 		// 根据 reset_at 和 window.seconds 计算该 row 对应的统计窗口。
 		windowStart, windowEnd, ok := quotaRowUsageWindow(response.Quota[index], now)
 		// 没有明确窗口或 reset_at 无法解析时跳过该 row。
@@ -129,15 +128,7 @@ func (s *Service) attachWindowUsageStatsWithProvider(ctx context.Context, authIn
 			// 把查询结果放入本次响应缓存，供相同窗口的其它 row 复用。
 			statsByWindow[key] = stats
 		}
-		// 复制 tokens/cost 值，确保指针指向当前 row 独立变量。
-		tokens := stats.Tokens
-		cost := stats.Cost
-		// token 和 cost 必须来自同一统计口径；provider pair 不完整时整对使用本地统计。
-		response.Quota[index].WindowUsageTokens = &tokens
-		response.Quota[index].WindowUsageCost = &cost
-		dual := stats.DualCosts.Normalized()
-		response.Quota[index].DualCosts = &dual
-		response.Quota[index].PricingSnapshotID = stats.PricingSnapshotID
+		attachLocalWindowCosts(&response.Quota[index], stats, statsProvider)
 	}
 	// 返回已经补充窗口用量的 quota 响应。
 	return response

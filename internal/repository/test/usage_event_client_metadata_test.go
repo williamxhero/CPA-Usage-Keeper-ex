@@ -24,7 +24,7 @@ func TestUsageEventsPersistListAndExportClientMetadata(t *testing.T) {
 		UserAgent:     &userAgent,
 	}
 
-	if inserted, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{event}); err != nil || inserted != 1 {
+	if inserted, _, err := repository.InsertUsageEvents(db, requestEventFixtureWithZeroFees([]entities.UsageEvent{event})); err != nil || inserted != 1 {
 		t.Fatalf("InsertUsageEvents inserted=%d err=%v", inserted, err)
 	}
 
@@ -37,9 +37,9 @@ func TestUsageEventsPersistListAndExportClientMetadata(t *testing.T) {
 	}
 	assertUsageEventClientMetadata(t, page.Events[0], clientIP, xForwardedFor, userAgent)
 
-	exported, err := repository.ExportUsageEventsWithFilter(db, dto.UsageQueryFilter{}, emptyPricingResolverForTest())
+	exported, err := collectRequestEventsForTest(db, dto.UsageQueryFilter{}, emptyPricingSnapshotForTest())
 	if err != nil {
-		t.Fatalf("ExportUsageEventsWithFilter returned error: %v", err)
+		t.Fatalf("StreamUsageEventsWithFilter returned error: %v", err)
 	}
 	if len(exported) != 1 {
 		t.Fatalf("expected one exported event, got %d", len(exported))

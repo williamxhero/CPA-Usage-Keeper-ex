@@ -26,7 +26,8 @@ func newUsageOverviewRecord(windowMinutes int64) *dto.UsageOverviewRecord
 //go:linkname applyUsageEventToOverviewSnapshot cpa-usage-keeper/internal/repository.applyUsageEventToOverviewSnapshot
 func applyUsageEventToOverviewSnapshot(snapshot *dto.StatisticsSnapshot, event entities.UsageEvent)
 
-// 生产辅助函数增加了可选的身份查询切片，此处保持可变参数声明以匹配调用约定。
+// 生产辅助函数增加了可选的身份查询切片，此处保持实际私有类型的可变参数声明以匹配 ABI。
+// 同包测试桥不引入新的生产 public API。
 //
 //go:linkname applyUsageEventToOverview cpa-usage-keeper/internal/repository.applyUsageEventToOverview
 func applyUsageEventToOverview(overview *dto.UsageOverviewRecord, event entities.UsageEvent, bucketByDay bool, costResolver pricing.Resolver, identityLookups ...any)
@@ -34,11 +35,15 @@ func applyUsageEventToOverview(overview *dto.UsageOverviewRecord, event entities
 //go:linkname finalizeUsageOverview cpa-usage-keeper/internal/repository.finalizeUsageOverview
 func finalizeUsageOverview(overview *dto.UsageOverviewRecord)
 
-//go:linkname applyUsageOverviewQuery cpa-usage-keeper/internal/repository.applyUsageOverviewQuery
-func applyUsageOverviewQuery(query *gorm.DB, filter dto.UsageQueryFilter) *gorm.DB
+//go:linkname usageOverviewBucketABI cpa-usage-keeper/internal/repository.usageOverviewBucket
+func usageOverviewBucketABI(timestamp time.Time, byDay bool) (string, int64)
 
-//go:linkname usageOverviewBucket cpa-usage-keeper/internal/repository.usageOverviewBucket
-func usageOverviewBucket(timestamp time.Time, byDay bool) (string, int64)
+// Keep the historical single-value test helper local; the linkname bridge above
+// preserves the production pair return without an unsafe call-site mismatch.
+func usageOverviewBucket(timestamp time.Time, byDay bool) string {
+	key, _ := usageOverviewBucketABI(timestamp, byDay)
+	return key
+}
 
 //go:linkname usageOverviewRealtimeWindow cpa-usage-keeper/internal/repository.usageOverviewRealtimeWindow
 func usageOverviewRealtimeWindow(value string) (time.Duration, time.Duration)
@@ -77,15 +82,8 @@ func hasCachedCredentialHealthKey(cache *UsageRecentEventCache, authType, authIn
 }
 
 // 只传递切片头，不读写、遍历或重新分配元素，避免复制生产私有行结构的内存布局。
-// 窗口行交回原生产聚合函数；健康行仅统计批次长度，字段值经公开健康快照验证。
-type opaqueWindowTokenRows []struct{}
+// 健康行仅统计批次长度，字段值经公开健康快照验证。
 type opaqueCredentialHealthRows []struct{}
 
-//go:linkname sumLongUsageWindowTokenStats cpa-usage-keeper/internal/repository.sumLongUsageWindowTokenStats
-func sumLongUsageWindowTokenStats(db *gorm.DB, authIndex string, start, end time.Time, activeFields pricing.ActiveFields) (opaqueWindowTokenRows, error)
-
-//go:linkname usageWindowStatsFromTokenStats cpa-usage-keeper/internal/repository.usageWindowStatsFromTokenStats
-func usageWindowStatsFromTokenStats(rows opaqueWindowTokenRows, costResolver pricing.Resolver) UsageWindowStats
-
 //go:linkname loadCredentialHealthCacheRowsBatched cpa-usage-keeper/internal/repository.loadCredentialHealthCacheRowsBatched
-func loadCredentialHealthCacheRowsBatched(db *gorm.DB, start time.Time, batchSize int, handle func(opaqueCredentialHealthRows) error) error
+func loadCredentialHealthCacheRowsBatched(db *gorm.DB, start, anchor time.Time, batchSize int, handle func(opaqueCredentialHealthRows) error) error

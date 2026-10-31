@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type PointerEvent, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
-import { useTranslation } from 'react-i18next';
 import type { Chart, TooltipModel } from 'chart.js';
-import { IconX } from '@/components/ui/icons';
+import { buildUsageChartTooltipStyle, type UsageChartTheme } from '@/utils/usage/chartConfig';
 import { useAnchorPosition } from '@/hooks/useAnchorPosition';
 import styles from './AnalysisPanel.module.scss';
 
@@ -17,16 +16,14 @@ type TooltipContent = {
   footer: string;
 };
 
-function TopModelsTooltip({ content, canvasRef, panelRef, isMobile, dismiss, cancelClose, scheduleClose }: {
+function TopModelsTooltip({ content, canvasRef, panelRef, isMobile, theme }: {
   content: TooltipContent;
   canvasRef: RefObject<HTMLCanvasElement | null>;
   panelRef: RefObject<HTMLDivElement | null>;
   isMobile: boolean;
-  dismiss: () => void;
-  cancelClose: () => void;
-  scheduleClose: () => void;
+  theme: UsageChartTheme;
 }) {
-  const { t } = useTranslation();
+  const tooltipStyle = buildUsageChartTooltipStyle(theme);
   const updatePosition = useCallback((rect: DOMRect) => {
     const panel = panelRef.current;
     if (!panel) return;
@@ -36,7 +33,8 @@ function TopModelsTooltip({ content, canvasRef, panelRef, isMobile, dismiss, can
     const leftEdge = (viewport?.offsetLeft ?? 0) + 8;
     const topEdge = (viewport?.offsetTop ?? 0) + 8;
     const mobile = isMobile || content.touch;
-    panel.style.width = `${Math.min(mobile ? width : 360, width - 16)}px`;
+    panel.style.width = 'max-content';
+    panel.style.maxWidth = `${width - 16}px`;
     panel.style.maxHeight = `${Math.min(380, mobile ? height * 0.6 : height - 16)}px`;
     const bounds = panel.getBoundingClientRect();
     const rightEdge = leftEdge + width - 16;
@@ -54,10 +52,10 @@ function TopModelsTooltip({ content, canvasRef, panelRef, isMobile, dismiss, can
 
   return (
     <div ref={panelRef} role="tooltip" data-top-models-tooltip className={styles.topModelsTooltip}
-      onPointerEnter={cancelClose} onPointerLeave={scheduleClose}>
+      style={{ pointerEvents: content.touch ? 'auto' : 'none', backgroundColor: tooltipStyle.backgroundColor,
+        color: tooltipStyle.bodyColor, borderColor: tooltipStyle.borderColor }}>
       <div className={styles.topModelsTooltipHeader}>
-        <strong>{content.title}</strong>
-        <button type="button" aria-label={t('common.close')} onClick={dismiss}><IconX size={16} /></button>
+        <strong style={{ color: tooltipStyle.titleColor }}>{content.title}</strong>
       </div>
       <ol key={content.title} className={styles.topModelsTooltipRows}>
         {content.rows.map((row, index) => (
@@ -72,55 +70,36 @@ function TopModelsTooltip({ content, canvasRef, panelRef, isMobile, dismiss, can
   );
 }
 
-export function useTopModelsTooltip(source: object, enabled: boolean, isMobile: boolean) {
+export function useTopModelsTooltip(source: object, enabled: boolean, isMobile: boolean, theme: UsageChartTheme) {
   const chartRef = useRef<Chart | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const touchInput = useRef(false);
-  const hoveringTooltip = useRef(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [content, setContent] = useState<TooltipContent | null>(null);
   const visible = enabled && content?.source === source ? content : null;
 
-  const cancelClose = useCallback(() => {
-    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
-    closeTimer.current = null;
-  }, []);
   const dismiss = useCallback(() => {
-    hoveringTooltip.current = false;
     const chart = chartRef.current;
     if (chart?.canvas) {
-      // 同步清除 Chart.js 的活动项，关闭后再次点同一根柱子也能重新打开。
       chart.tooltip?.setActiveElements([], { x: 0, y: 0 });
       chart.setActiveElements([]);
       chart.draw();
     }
-    cancelClose();
     setContent(null);
-  }, [cancelClose]);
-  const scheduleClose = useCallback(() => {
-    // Chart.js 的 mouseout 可能晚于浮层 pointerenter 到达，进入浮层后仍须保持打开。
-    cancelClose();
-    if (touchInput.current || hoveringTooltip.current) return;
-    // 留出从画布移入浮层的时间，让鼠标能滚动查看完整列表。
-    closeTimer.current = setTimeout(dismiss, 160);
-  }, [cancelClose, dismiss]);
-  const enterTooltip = useCallback(() => {
-    hoveringTooltip.current = true;
-    cancelClose();
-  }, [cancelClose]);
-  const leaveTooltip = useCallback(() => {
-    hoveringTooltip.current = false;
-    scheduleClose();
-  }, [scheduleClose]);
+  }, []);
+  const closeOnLeave = useCallback(() => {
+    if (!touchInput.current) dismiss();
+  }, [dismiss]);
 
   const external = useCallback(({ chart, tooltip }: { chart: Chart; tooltip: TooltipModel<'bar'> }) => {
     if (tooltip.opacity === 0) {
-      scheduleClose();
+      closeOnLeave();
       return;
     }
-    cancelClose();
-    if (!panelRef.current) hoveringTooltip.current = false;
+    if (!tooltip.body?.length) {
+      setContent(null);
+      return;
+    }
     chartRef.current = chart;
     canvasRef.current = chart.canvas;
     const title = tooltip.title.join('\n');
@@ -135,7 +114,7 @@ export function useTopModelsTooltip(source: object, enabled: boolean, isMobile: 
     setContent((previous) => previous?.source === source && previous.signature === signature
       && previous.x === x && previous.y === y && previous.touch === touch
       ? previous : { source, signature, title, rows, footer, x, y, touch });
-  }, [cancelClose, scheduleClose, source]);
+  }, [closeOnLeave, source]);
 
   useEffect(() => {
     if (!visible) return;
@@ -150,14 +129,27 @@ export function useTopModelsTooltip(source: object, enabled: boolean, isMobile: 
       document.removeEventListener('keydown', escape);
     };
   }, [dismiss, visible]);
-  useEffect(() => cancelClose, [cancelClose]);
+  // 桌面浮层不截获指针，滚轮在画布上仍可浏览长列表；触摸浮层可直接滚动。
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!visible || !canvas) return;
+    const scroll = (event: WheelEvent) => {
+      const rows = panelRef.current?.querySelector('ol');
+      if (!rows || rows.scrollHeight <= rows.clientHeight) return;
+      event.preventDefault();
+      rows.scrollTop += event.deltaY;
+    };
+    canvas.addEventListener('wheel', scroll, { passive: false });
+    return () => canvas.removeEventListener('wheel', scroll);
+  }, [visible]);
 
   return {
     external,
     onPointerDown: (event: PointerEvent) => { touchInput.current = event.pointerType === 'touch'; },
+    onPointerMove: (event: PointerEvent) => { if (event.pointerType === 'mouse') touchInput.current = false; },
     tooltip: visible ? createPortal(
       <TopModelsTooltip content={visible} canvasRef={canvasRef} panelRef={panelRef} isMobile={isMobile}
-        dismiss={dismiss} cancelClose={enterTooltip} scheduleClose={leaveTooltip} />,
+        theme={theme} />,
       document.body,
     ) : null,
   };

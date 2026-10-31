@@ -41,13 +41,13 @@ func TestCodexResetRecoversCPARoutingAfterOfficialSuccess(t *testing.T) {
 				}
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
-				case "/v0/management/api-call":
+				case "/v8/management/requests/api-call":
 					var request apicall.Request
 					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.AuthIndex != "codex-auth" || request.URL != quota.CodexRateLimitResetCreditsConsumeURL {
 						t.Errorf("unexpected consume request: %+v, error: %v", request, err)
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"status_code": tc.consumeStatus, "body": tc.consumeBody})
-				case "/v0/management/reset-quota":
+				case "/v8/management/routing/cooldown/reset":
 					var request map[string]string
 					if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !reflect.DeepEqual(request, map[string]string{"auth_index": "codex-auth"}) {
 						t.Errorf("recovery must target only the current auth_index: %v, error: %v", request, err)
@@ -62,9 +62,9 @@ func TestCodexResetRecoversCPARoutingAfterOfficialSuccess(t *testing.T) {
 			defer server.Close()
 			db := openQuotaTestDatabase(t)
 			disabled := true
-			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile, Disabled: &disabled})
-			service := quota.NewServiceWithOptions(db, cpa.NewClient(server.URL, "test-management-key", time.Second, false), quota.ServiceOptions{
-				PricingCatalog: emptyPricingCatalogForTest(), QuotaUpstreamResponsesEnabled: tc.recordResponses,
+			seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential, Disabled: &disabled})
+			service := quota.NewServiceWithOptions(db, cpa.NewClient(server.URL, "test-management-key", time.Second, false), quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
+				QuotaUpstreamResponsesEnabled: tc.recordResponses,
 			})
 			t.Cleanup(service.StopRefreshTasks)
 
@@ -72,9 +72,9 @@ func TestCodexResetRecoversCPARoutingAfterOfficialSuccess(t *testing.T) {
 			if (err != nil) != tc.wantResetError {
 				t.Fatalf("Reset error = %v, want error %v", err, tc.wantResetError)
 			}
-			wantCalls := []string{"/v0/management/api-call"}
+			wantCalls := []string{"/v8/management/requests/api-call"}
 			if !tc.wantResetError {
-				wantCalls = append(wantCalls, "/v0/management/reset-quota")
+				wantCalls = append(wantCalls, "/v8/management/routing/cooldown/reset")
 				if response.AuthIndex != "codex-auth" || response.Code != "reset" || response.WindowsReset != 2 {
 					t.Fatalf("official reset result lost: %+v", response)
 				}
@@ -121,12 +121,12 @@ func (c *blockingQuotaRecoveryCaller) ResetQuota(ctx context.Context, _ string) 
 
 func TestCodexResetBlocksDuplicateConsumptionDuringCPARecovery(t *testing.T) {
 	db := openQuotaTestDatabase(t)
-	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeAuthFile})
+	seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "codex-auth", Provider: "codex", Type: "codex", AuthType: entities.UsageIdentityAuthTypeCredential})
 	caller := &blockingQuotaRecoveryCaller{
 		recordingManagementCaller: recordingManagementCaller{responses: []*apicall.Response{{StatusCode: 200, BodyText: `{"code":"reset","windows_reset":2}`}}},
 		entered:                   make(chan struct{}), release: make(chan struct{}),
 	}
-	service := quota.NewService(db, caller, emptyPricingCatalogForTest())
+	service := quota.NewServiceWithOptions(db, caller, quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest()})
 	t.Cleanup(service.StopRefreshTasks)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

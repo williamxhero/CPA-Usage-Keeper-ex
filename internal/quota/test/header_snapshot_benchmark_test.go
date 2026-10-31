@@ -50,10 +50,9 @@ func BenchmarkBuildUsageHeaderSnapshot(b *testing.B) {
 
 func BenchmarkTryAppendUsageHeaderSnapshotPointers32(b *testing.B) {
 	// 该基准只测一次锁内批量指针合并与非阻塞 wake，不把 Header 解码或数据库工作混入结果。
-	service := quota.NewServiceWithRegistryAndOptions(nil, quota.NewProviderRegistry(nil), quota.ServiceOptions{
+	service := quota.NewServiceWithRegistryAndOptions(nil, quota.NewProviderRegistry(nil), quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		UsageHeaderSnapshotFlushInterval: time.Hour,
 		CodexQuotaHistoryFlushInterval:   time.Hour,
-		PricingCatalog:                   emptyPricingCatalogForTest(),
 	})
 	defer service.StopRefreshTasks()
 	// 使用非 OAuth 测试身份避免 shutdown 时执行数据库 identity 查询；append 的 map/指针成本保持相同。

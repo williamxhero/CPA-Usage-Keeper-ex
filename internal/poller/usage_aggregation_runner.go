@@ -58,11 +58,18 @@ type UsageAggregationRunnerOptions struct {
 	NowFunc          func() time.Time
 }
 
+type usageOverviewRowsBuilder func([]entities.UsageEvent) ([]entities.UsageOverviewHourlyStat, []entities.UsageOverviewDailyStat, int64, error)
+type usageOverviewPageApplier func(context.Context, *gorm.DB, int64, int64, []entities.UsageOverviewHourlyStat, []entities.UsageOverviewDailyStat, time.Time) error
+
 // UsageAggregationRunner 在一个 goroutine 内公平调度共享 rollups 与既有 Identity。
 type UsageAggregationRunner struct {
-	db               *gorm.DB
-	now              func() time.Time
-	debounceInterval time.Duration
+	db                *gorm.DB
+	now               func() time.Time
+	debounceInterval  time.Duration
+	buildOverviewRows usageOverviewRowsBuilder
+	applyOverviewPage usageOverviewPageApplier
+	// workGate 保护普通 turn 的完整 Reader 预读、计算、事务提交和内存状态更新。
+	workGate aggregationWorkGate
 
 	// mu 只保护轻量内存目标和 Identity 分页状态，锁内不执行数据库操作。
 	mu sync.Mutex
@@ -109,10 +116,26 @@ func NewUsageAggregationRunnerWithOptions(db *gorm.DB, options UsageAggregationR
 		db:                       db,
 		now:                      now,
 		debounceInterval:         debounceInterval,
+		buildOverviewRows:        overview.BuildOrdinaryRows,
+		applyOverviewPage:        repository.ApplyUsageOverviewAggregationPage,
 		nextKind:                 UsageAggregationKindRollups,
 		identityTargetGeneration: 1, // 启动时必须覆盖一次进程启动前已经存在的 identities。
 		wake:                     make(chan struct{}, 1),
 	}
+}
+
+// NewStoredUsageAggregationMaintenanceRunner preserves the strict persisted-fee
+// rollup contract at an explicit maintenance boundary. It is never selected by
+// ordinary startup or inferred from fee/catalog readiness. Callers must hold
+// exclusive maintenance ownership: it shares the existing overview checkpoint
+// and must not run alongside ordinary ingestion against the same rollups.
+// Activity and latency keep their independent transactions/cursors when a stored
+// overview page is rejected, including during fallback and resumption.
+func NewStoredUsageAggregationMaintenanceRunner(db *gorm.DB, options UsageAggregationRunnerOptions) *UsageAggregationRunner {
+	runner := NewUsageAggregationRunnerWithOptions(db, options)
+	runner.buildOverviewRows = overview.BuildStoredRows
+	runner.applyOverviewPage = repository.ApplyStoredUsageOverviewAggregationPage
+	return runner
 }
 
 // NotifyUsageEventsCommitted 在事务成功后只提高内存目标并非阻塞唤醒 runner。
@@ -332,6 +355,11 @@ func (r *UsageAggregationRunner) identityWorkPendingLocked() bool {
 }
 
 func (r *UsageAggregationRunner) runPreparedOnce(ctx context.Context) (UsageAggregationRunResult, error) {
+	leave, err := r.workGate.enter(ctx)
+	if err != nil {
+		return UsageAggregationRunResult{}, err
+	}
+	defer leave()
 	r.mu.Lock()
 	// 只有两类工作都存在时才遵循公平轮转；其中一类已经追平时直接执行另一类，避免空 turn 查询数据库。
 	kind, runnable := r.nextRunnableKindLocked()
@@ -454,7 +482,9 @@ func (r *UsageAggregationRunner) runSharedRollupsPage(ctx context.Context, write
 	}
 
 	// 三类纯计算复用同一份只读事件；各自错误只跳过自己，成功结果仍可用独立事务提交。
-	overviewHourly, overviewDaily, nextCursor := overview.BuildRows(events)
+	// 三类聚合共享同一实际事件页终点；Overview 费用缺失不能把其它独立水位误推到 0。
+	nextCursor := events[len(events)-1].ID
+	overviewHourly, overviewDaily, _, overviewErr := r.buildOverviewRows(events)
 	activityRows, activityErr := activity.BuildRows(events, now)
 	latencyRows, latencyErr := latency.BuildRows(events, now)
 
@@ -466,7 +496,9 @@ func (r *UsageAggregationRunner) runSharedRollupsPage(ctx context.Context, write
 		}
 		return processed, deferred, false, errors.Join(pageErrors...)
 	}
-	if err := repository.ApplyUsageOverviewAggregationPage(ctx, writeDB, cursor, nextCursor, overviewHourly, overviewDaily, now); err != nil {
+	if overviewErr != nil {
+		pageErrors = append(pageErrors, overviewErr)
+	} else if err := r.applyOverviewPage(ctx, writeDB, cursor, nextCursor, overviewHourly, overviewDaily, now); err != nil {
 		pageErrors = append(pageErrors, err)
 	} else {
 		processed = true
@@ -513,18 +545,22 @@ func (r *UsageAggregationRunner) runFallbackRollupsPages(ctx context.Context, wr
 		} else if len(events) == 0 {
 			pageErrors = append(pageErrors, fmt.Errorf("overview fallback page is empty before target %d", targetEventID))
 		} else {
-			hourly, daily, nextCursor := overview.BuildRows(events)
-			if deferred, deferErr := r.deferForInbox(ctx, writeDB); deferErr != nil || deferred {
-				if deferErr != nil {
-					pageErrors = append(pageErrors, deferErr)
-				}
-				return processed, deferred, false, errors.Join(pageErrors...)
-			}
-			if applyErr := repository.ApplyUsageOverviewAggregationPage(ctx, writeDB, snapshot.OverviewCursor, nextCursor, hourly, daily, now); applyErr != nil {
-				pageErrors = append(pageErrors, applyErr)
+			hourly, daily, nextCursor, buildErr := r.buildOverviewRows(events)
+			if buildErr != nil {
+				pageErrors = append(pageErrors, buildErr)
 			} else {
-				snapshot.OverviewCursor = nextCursor
-				processed = true
+				if deferred, deferErr := r.deferForInbox(ctx, writeDB); deferErr != nil || deferred {
+					if deferErr != nil {
+						pageErrors = append(pageErrors, deferErr)
+					}
+					return processed, deferred, false, errors.Join(pageErrors...)
+				}
+				if applyErr := r.applyOverviewPage(ctx, writeDB, snapshot.OverviewCursor, nextCursor, hourly, daily, now); applyErr != nil {
+					pageErrors = append(pageErrors, applyErr)
+				} else {
+					snapshot.OverviewCursor = nextCursor
+					processed = true
+				}
 			}
 		}
 	}

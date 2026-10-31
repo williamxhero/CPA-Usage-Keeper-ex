@@ -60,45 +60,46 @@ type UsageEventFilterOptions struct {
 
 // UsageEventRecord 是单条 usage event 的服务层结果。
 type UsageEventRecord struct {
-	DualCosts           pricing.DualCosts
-	ChannelID           string
-	ChannelName         string
-	AttributionWarning  string
-	PricingSnapshotID   string
-	ID                  int64
-	Timestamp           time.Time
-	APIGroupKey         string
-	Model               string
-	ModelAlias          string
-	ResponseModel       string
-	ReasoningEffort     string
-	ServiceTier         string
-	ResponseServiceTier string
-	ClientIP            *string
-	XForwardedFor       *string
-	UserAgent           *string
-	ExecutorType        string
-	Endpoint            string
-	AuthType            string
-	RequestID           string
-	Provider            string
-	Source              string
-	AuthIndex           string
-	Failed              bool
-	StatusCode          *int
-	Stream              *bool
-	LatencyMS           int64
-	TTFTMS              *int64
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
-	TotalTokens         int64
-	CostUSD             float64
-	CostAvailable       bool
-	PricingStyle        string
-	PricingSelection    *pricing.CostSelection
+	DualCosts            pricing.DualCosts
+	ChannelID            string
+	ChannelName          string
+	AttributionWarning   string
+	PricingSnapshotID    string
+	ID                   int64
+	Timestamp            time.Time
+	APIGroupKey          string
+	Model                string
+	ModelAlias           string
+	ResponseModel        string
+	ReasoningEffort      string
+	ServiceTier          string
+	EffectiveServiceTier string
+	ResponseServiceTier  string
+	ClientIP             *string
+	XForwardedFor        *string
+	UserAgent            *string
+	ExecutorType         string
+	Endpoint             string
+	AuthType             string
+	RequestID            string
+	Provider             string
+	Source               string
+	AuthIndex            string
+	Failed               bool
+	StatusCode           *int
+	Stream               *bool
+	LatencyMS            int64
+	TTFTMS               *int64
+	InputTokens          int64
+	OutputTokens         int64
+	ReasoningTokens      int64
+	CacheReadTokens      int64
+	CacheCreationTokens  int64
+	TotalTokens          int64
+	CostUSD              float64
+	CostAvailable        bool
+	PricingStyle         string
+	PricingSelection     *pricing.CostSelection
 }
 
 // UsageOverviewSummary 是 overview summary 的服务层结果。
@@ -171,6 +172,7 @@ type RealtimeUsageTopItem struct {
 type RealtimeCurrentUsage struct {
 	Models      []RealtimeUsageTopItem
 	APIKeys     []RealtimeUsageTopItem
+	Credentials []RealtimeUsageTopItem
 	AuthFiles   []RealtimeUsageTopItem
 	AIProviders []RealtimeUsageTopItem
 }
@@ -191,6 +193,29 @@ type RealtimeCacheLevelPoint struct {
 	InputTokens         int64
 }
 
+// RealtimeModelSpeed 只承载可见缓存窗口两半的逐请求速度统计。
+type RealtimeModelSpeed struct {
+	Available bool
+	Start     time.Time
+	Mid       time.Time
+	End       time.Time
+	Series    []RealtimeModelSpeedSeries
+}
+
+type RealtimeModelSpeedSeries struct {
+	Model            string
+	TotalTokens      int64
+	SpeedSampleCount int64
+	FirstHalf        RealtimeModelSpeedSample
+	SecondHalf       RealtimeModelSpeedSample
+}
+
+type RealtimeModelSpeedSample struct {
+	SpeedTPSSum      float64
+	SpeedSampleCount int64
+	MeanTPS          *float64
+}
+
 // UsageOverviewRealtime 是 Overview 页面实时图表区使用的数据块。
 type UsageOverviewRealtime struct {
 	PricingSnapshotID string
@@ -200,6 +225,7 @@ type UsageOverviewRealtime struct {
 	WindowStart       time.Time
 	WindowEnd         time.Time
 	TokenVelocity     []RealtimeTokenVelocityPoint
+	ModelSpeed        RealtimeModelSpeed
 	LatencyScatter    RealtimeLatencyScatter
 	CurrentUsage      RealtimeCurrentUsage
 	RequestLevel      []RealtimeRequestLevelPoint

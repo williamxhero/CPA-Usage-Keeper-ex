@@ -53,6 +53,7 @@ func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t
 			"auth_index":"auth-a",
 			"model":"gpt-5.5",
 			"request_id":"async-aggregation",
+			"execution_id":"async-aggregation-execution",
 			"tokens":{"input_tokens":10,"output_tokens":2,"cached_tokens":7,"cache_read_tokens":3,"total_tokens":12},
 			"response_headers":{"X-Codex-Primary-Used-Percent":["5"],"X-Codex-Primary-Window-Minutes":["300"],"X-Codex-Primary-Reset-After-Seconds":["60"]}
 		}`,
@@ -63,7 +64,7 @@ func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t
 	}
 	notifier := &recordingUsageAggregationNotifier{}
 	headerAppender := &recordingUsageHeaderSnapshotAppender{}
-	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		Now:                      func() time.Time { return now },
 		UsageAggregationNotifier: notifier,
@@ -97,18 +98,18 @@ func TestProcessRedisUsageInboxReturnsAfterCommitWithoutSynchronousAggregation(t
 func TestProcessRedisUsageInboxEmptyBatchKeepsLegacyCatchUpWithoutNotifier(t *testing.T) {
 	db := openUsageServiceTestDatabase(t)
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	identity := entities.UsageIdentity{Name: "compat-auth", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "compat-auth", Type: "codex"}
+	identity := entities.UsageIdentity{Name: "compat-auth", AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "compat-auth", Type: "codex"}
 	if err := db.Create(&identity).Error; err != nil {
 		t.Fatalf("insert compatibility identity: %v", err)
 	}
-	events := []entities.UsageEvent{{
+	events := []entities.UsageEvent{storedUsageEventFee(entities.UsageEvent{
 		EventKey: "empty-no-catchup", APIGroupKey: "provider-a", Model: "model-a", AuthType: "oauth", AuthIndex: identity.Identity,
 		Timestamp: now.Add(-time.Minute), InputTokens: 10, TotalTokens: 10,
-	}}
+	}, 0, false)}
 	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
 		t.Fatalf("insert pending raw event: %v", err)
 	}
-	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{BaseURL: "https://cpa.example.com", Now: func() time.Time { return now }})
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com", Now: func() time.Time { return now }})
 
 	result, err := syncService.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
@@ -139,7 +140,7 @@ func TestProcessRedisUsageInboxEmptyBatchKeepsLegacyCatchUpWithoutNotifier(t *te
 func TestSyncMetadataNotifiesIdentityAggregationWithoutRunningCatchUp(t *testing.T) {
 	db := openUsageServiceTestDatabase(t)
 	notifier := &recordingUsageAggregationNotifier{}
-	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		MetadataFetcher:          newMetadataTestFetcher(),
 		UsageAggregationNotifier: notifier,
@@ -164,4 +165,11 @@ func assertUsageAggregationFlowOverviewCheckpointMissing(t *testing.T, db *gorm.
 	if count != 0 {
 		t.Fatalf("expected overview checkpoint to remain missing, got %d rows", count)
 	}
+}
+
+// storedUsageEventFee 为直插测试事件明确写入当时的费用事实；不替迁移中的 NULL 行补默认值。
+func storedUsageEventFee(event entities.UsageEvent, costUSD float64, available bool) entities.UsageEvent {
+	event.CostUSD = &costUSD
+	event.CostAvailable = &available
+	return event
 }

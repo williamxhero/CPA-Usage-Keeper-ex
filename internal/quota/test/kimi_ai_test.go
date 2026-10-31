@@ -12,7 +12,7 @@ import (
 
 	"cpa-usage-keeper/internal/cpa"
 	"cpa-usage-keeper/internal/cpa/dto/apicall"
-	"cpa-usage-keeper/internal/cpa/dto/authfiles"
+	"cpa-usage-keeper/internal/cpa/dto/credentials"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/quota"
 )
@@ -45,16 +45,16 @@ func TestKimiProviderResolvesCredentialDomainAndKeepsProvider(t *testing.T) {
 							t.Errorf("missing CPA management authentication")
 						}
 						switch r.URL.Path {
-						case "/v0/management/auth-files/download":
+						case "/v8/management/credentials/download":
 							downloaded = append(downloaded, r.URL.Query().Get("name"))
 							_, _ = w.Write([]byte(tc.credential))
-						case "/v0/management/api-call":
+						case "/v8/management/requests/api-call":
 							var request apicall.Request
 							if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 								t.Fatal(err)
 							}
 							requests = append(requests, request)
-							_ = json.NewEncoder(w).Encode(quotaAPIResponse(200, `{"usage":{"limit":"100","remaining":"72","resetTime":"2026-10-12T00:00:00Z"},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"92","remaining":"8"}}]}`))
+							_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "body": `{"usage":{"limit":"100","remaining":"72","resetTime":"2026-10-12T00:00:00Z"},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"92","remaining":"8"}}]}`})
 						default:
 							t.Errorf("unexpected path %s", r.URL.Path)
 						}
@@ -101,8 +101,8 @@ type kimiAIMetadataCaller struct {
 	credentialType string
 }
 
-func (c *kimiAIMetadataCaller) FetchKimiCredentialMetadata(context.Context, string) (*authfiles.KimiCredentialMetadata, error) {
-	return &authfiles.KimiCredentialMetadata{Type: c.credentialType}, nil
+func (c *kimiAIMetadataCaller) FetchKimiCredentialMetadata(context.Context, string) (*credentials.KimiCredentialMetadata, error) {
+	return &credentials.KimiCredentialMetadata{Type: c.credentialType}, nil
 }
 
 func TestKimiProviderNormalizesMonthlyRatioForAllAliases(t *testing.T) {
@@ -162,17 +162,17 @@ func TestKimiRefreshPipelineSupportsManualScheduledAndInspection(t *testing.T) {
 				t.Run(string(source), func(t *testing.T) {
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						switch r.URL.Path {
-						case "/v0/management/auth-files/download":
+						case "/v8/management/credentials/download":
 							_, _ = fmt.Fprintf(w, `{"type":%q,"access_token":"credential-secret","refresh_token":"refresh-secret"}`, identityType)
-						case "/v0/management/api-call":
-							_ = json.NewEncoder(w).Encode(quotaAPIResponse(200, `{"usages":{"limit_month_total":{"used_ratio":1,"reset_time":"2026-11-05T00:00:00Z"}}}`))
+						case "/v8/management/requests/api-call":
+							_ = json.NewEncoder(w).Encode(map[string]any{"status_code": 200, "body": `{"usages":{"limit_month_total":{"used_ratio":1,"reset_time":"2026-11-05T00:00:00Z"}}}`})
 						default:
 							t.Errorf("unexpected CPA path: %s", r.URL.Path)
 						}
 					}))
 					defer server.Close()
 					db := openQuotaTestDatabase(t)
-					seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "international-auth", Provider: identityType, Type: identityType, AuthType: entities.UsageIdentityAuthTypeAuthFile, FileName: stringPtr("account.json"), FilePath: stringPtr("/data/auths/account.json")})
+					seedUsageIdentity(t, db, entities.UsageIdentity{Identity: "international-auth", Provider: identityType, Type: identityType, AuthType: entities.UsageIdentityAuthTypeCredential, FileName: stringPtr("account.json"), FilePath: stringPtr("/data/auths/account.json")})
 					service := quota.NewServiceWithOptions(db, cpa.NewClient(server.URL, "management-key", time.Second, false), quota.ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), QuotaUpstreamResponsesEnabled: true})
 					t.Cleanup(service.StopRefreshTasks)
 					setRefreshCooldown(service, func(time.Duration) {})
@@ -235,7 +235,7 @@ func TestKimiProviderRejectsUnavailableCredentialWithoutUsageCall(t *testing.T) 
 					calls := 0
 					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						calls++
-						if r.URL.Path != "/v0/management/auth-files/download" {
+						if r.URL.Path != "/v8/management/credentials/download" {
 							t.Errorf("must not call usage API after credential failure: %s", r.URL.Path)
 						}
 						w.WriteHeader(tc.status)

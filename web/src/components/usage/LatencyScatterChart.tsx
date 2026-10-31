@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import '@/lib/chartjs';
 import type { Chart, ChartData, ChartOptions, Plugin } from 'chart.js';
-import { Scatter } from 'react-chartjs-2';
+import { Scatter } from './charts/UsageChart';
 import { formatDurationMs } from '@/utils/usage';
 import { getUsageChartTheme, type UsageChartTheme } from '@/utils/usage/chartConfig';
 

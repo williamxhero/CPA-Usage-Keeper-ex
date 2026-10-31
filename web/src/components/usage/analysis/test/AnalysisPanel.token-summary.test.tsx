@@ -51,11 +51,11 @@ const analysis: AnalysisResponse = {
     },
   ],
   cost_breakdown: {
-    uncached_input_cost_usd: 1,
-    cache_read_cost_usd: 1.5,
-    cache_write_cost_usd: 0.5,
-    output_cost_usd: 3,
-    total_cost_usd: 6,
+    uncached_input_cost_usd: 3, cache_read_cost_usd: 0, cache_write_cost_usd: 0,
+    output_cost_usd: 3, total_cost_usd: 6, cost_available: true,
+  },
+  cost_summary: {
+    total_cost_usd: 9,
     cost_available: true,
   },
 };
@@ -71,25 +71,38 @@ describe('AnalysisPanel token chart summary', () => {
       'usage_stats.total_tokens3.00M',
       'usage_stats.total_costcost_estimates.configured$6.00cost_estimates.not_providedcost_estimates.reference—cost_estimates.not_provided',
       'cost_estimates.configured · usage_stats.analysis_cost_per_million_tokens$2.00',
+      'Stored valuation / 已存估值$9.00',
     ]);
     expect([...container.querySelectorAll('h2')].map((heading) => heading.textContent)).toEqual([
       'usage_stats.analysis_token_usage_title',
       'usage_stats.analysis_composition_title',
       'usage_stats.analysis_top_models_title',
       'usage_stats.analysis_latency_title',
+      'usage_stats.analysis_model_speed_title',
       'usage_stats.analysis_model_efficiency_title',
       'usage_stats.analysis_heatmap_title',
     ]);
   });
 
+  it('never substitutes stored valuation for current matrix pricing when the breakdown is absent', () => {
+    const container = renderAnalysisPanel({ analysis: { ...analysis, cost_breakdown: undefined } });
+    const values = [...container.querySelectorAll('section:first-child [class*="analysisSummary"] dd')].map((value) => value.textContent);
+    expect(values).toEqual([
+      '3.00M',
+      'cost_estimates.configured—cost_estimates.not_providedcost_estimates.reference—cost_estimates.not_provided',
+      '—',
+      '$9.00',
+    ]);
+  });
+
   it('retains the pricing hint and avoids invalid rates for zero tokens', () => {
     const container = renderAnalysisPanel({
-      analysis: { ...analysis, token_usage: [], cost_breakdown: { ...analysis.cost_breakdown, cost_available: false } },
+      analysis: { ...analysis, token_usage: [], cost_summary: { ...analysis.cost_summary, cost_available: false } },
     });
     const tokenCard = container.querySelector('section')!;
     expect(tokenCard.textContent).toContain('usage_stats.cost_need_price');
     const values = [...tokenCard.querySelectorAll('[class*="analysisSummary"] dd')].map((value) => value.textContent);
-    expect(values).toEqual(['0', 'cost_estimates.configured$6.00cost_estimates.not_providedcost_estimates.reference—cost_estimates.not_provided', '$0.0000']);
+    expect(values).toEqual(['0', 'cost_estimates.configured$6.00cost_estimates.not_providedcost_estimates.reference—cost_estimates.not_provided', '$0.0000', '$9.00']);
     expect(tokenCard.textContent).not.toMatch(/NaN|Infinity/);
   });
 });

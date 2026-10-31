@@ -35,12 +35,13 @@ type usageOverviewComparisons struct {
 	Timezone          string                        `json:"timezone"`
 	Models            []usageOverviewComparisonItem `json:"models"`
 	APIKeys           []usageOverviewComparisonItem `json:"api_keys,omitempty"`
+	Credentials       []usageOverviewComparisonItem `json:"credentials,omitempty"`
 	AuthFiles         []usageOverviewComparisonItem `json:"auth_files,omitempty"`
 	AIProviders       []usageOverviewComparisonItem `json:"ai_providers,omitempty"`
 }
 
 func buildUsageOverviewComparisons(overview *servicedto.UsageOverviewSnapshot, infos map[string]analysisAPIKeyInfo) *usageOverviewComparisons {
-	result := &usageOverviewComparisons{Buckets: []string{}, Granularity: "hourly", Timezone: time.Local.String(), Models: []usageOverviewComparisonItem{}, APIKeys: []usageOverviewComparisonItem{}, AuthFiles: []usageOverviewComparisonItem{}, AIProviders: []usageOverviewComparisonItem{}}
+	result := &usageOverviewComparisons{Buckets: []string{}, Granularity: "hourly", Timezone: time.Local.String(), Models: []usageOverviewComparisonItem{}, APIKeys: []usageOverviewComparisonItem{}, Credentials: []usageOverviewComparisonItem{}, AuthFiles: []usageOverviewComparisonItem{}, AIProviders: []usageOverviewComparisonItem{}}
 	if overview != nil {
 		result.PricingSnapshotID = overview.PricingSnapshotID
 	}
@@ -55,7 +56,14 @@ func buildUsageOverviewComparisons(overview *servicedto.UsageOverviewSnapshot, i
 	result.Granularity = overview.Comparisons.Granularity
 	result.Models = mapUsageOverviewComparison(overview.Comparisons.Models, nil, false, result.Buckets)
 	result.APIKeys = mapUsageOverviewComparison(overview.Comparisons.APIKeys, infos, true, result.Buckets)
-	result.AuthFiles = mapUsageOverviewComparison(overview.Comparisons.AuthFiles, nil, false, result.Buckets)
+	credentials := overview.Comparisons.Credentials
+	// A nil canonical field denotes an older provider, not an explicitly empty
+	// scope. Never refill an intentionally empty canonical selection.
+	if credentials == nil {
+		credentials = overview.Comparisons.AuthFiles
+	}
+	result.Credentials = mapUsageOverviewComparison(credentials, nil, false, result.Buckets)
+	result.AuthFiles = result.Credentials
 	result.AIProviders = mapUsageOverviewComparison(overview.Comparisons.AIProviders, nil, false, result.Buckets)
 	return result
 }

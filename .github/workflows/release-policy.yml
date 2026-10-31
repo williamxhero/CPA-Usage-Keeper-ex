@@ -1,0 +1,68 @@
+name: Validate release branch
+
+on:
+  workflow_call:
+    outputs:
+      latest:
+        description: Whether this release updates the default stable channel
+        value: ${{ jobs.validate.outputs.latest }}
+      formula:
+        description: Homebrew formula for this release line
+        value: ${{ jobs.validate.outputs.formula }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-26.04
+    outputs:
+      latest: ${{ steps.policy.outputs.latest }}
+      formula: ${{ steps.policy.outputs.formula }}
+    steps:
+      - name: Checkout tagged commit and branch history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag and source branch
+        id: policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" != "refs/tags/${GITHUB_REF_NAME}" ||
+                ! "${GITHUB_REF_NAME}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Release publishing requires a stable vMAJOR.MINOR.PATCH tag." >&2
+            exit 1
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          branch=main
+          latest=true
+          formula=cpa-usage-keeper
+          if [[ "${major}" == 1 ]]; then
+            branch=release/v1
+            latest=false
+            formula=cpa-usage-keeper@1
+          fi
+
+          # Tags have no source branch. Require the tagged commit to be in the
+          # selected remote branch's history, including annotated tags.
+          git fetch --no-tags origin "+refs/heads/${branch}:refs/remotes/origin/${branch}"
+          tag_commit="$(git rev-parse "${GITHUB_REF}^{commit}")"
+          event_commit="$(git rev-parse "${GITHUB_SHA}^{commit}")"
+          if [[ "${tag_commit}" != "${event_commit}" ||
+                "$(git rev-parse HEAD)" != "${event_commit}" ]]; then
+            echo "The checked-out commit does not match the triggering tag." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "${tag_commit}" "refs/remotes/origin/${branch}"; then
+            echo "${GITHUB_REF_NAME} must point to a commit on ${branch}." >&2
+            exit 1
+          fi
+
+          {
+            echo "latest=${latest}"
+            echo "formula=${formula}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "Validated ${GITHUB_REF_NAME} on ${branch}; Homebrew formula: ${formula}"

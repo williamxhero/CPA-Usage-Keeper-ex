@@ -16,23 +16,27 @@ import (
 
 // analysisOverviewStatProjection 同时承接 hourly 与 daily 聚合表的 Analysis 窄投影。
 type analysisOverviewStatProjection struct {
-	BucketStart         time.Time
-	APIGroupKey         string
-	Model               string
-	AuthIndex           string
-	ModelAlias          string
-	ServiceTier         string
-	ResponseServiceTier string
-	ReasoningEffort     string
-	Endpoint            string
-	ExecutorType        string
-	RequestCount        int64
-	InputTokens         int64
-	OutputTokens        int64
-	ReasoningTokens     int64
-	CacheReadTokens     int64
-	CacheCreationTokens int64
-	TotalTokens         int64
+	BucketStart          time.Time
+	APIGroupKey          string
+	Model                string
+	AuthIndex            string
+	ModelAlias           string
+	ServiceTier          string
+	ResponseServiceTier  string
+	ReasoningEffort      string
+	Endpoint             string
+	ExecutorType         string
+	RequestCount         int64
+	InputTokens          int64
+	OutputTokens         int64
+	ReasoningTokens      int64
+	CacheReadTokens      int64
+	CacheCreationTokens  int64
+	TotalTokens          int64
+	CostUSD              *float64 `gorm:"column:cost_usd"`
+	UnavailableCostCount *int64   `gorm:"column:unavailable_cost_count"`
+	SpeedTPSSum          float64
+	SpeedSampleCount     int64
 }
 
 var analysisOverviewProjectionFixedColumns = [...]string{
@@ -48,6 +52,8 @@ var analysisOverviewProjectionFixedColumns = [...]string{
 	"cache_read_tokens",
 	"cache_creation_tokens",
 	"total_tokens",
+	"speed_tps_sum",
+	"speed_sample_count",
 }
 
 func analysisOverviewProjectionColumns(activeFields pricing.ActiveFields) string {
@@ -80,17 +86,63 @@ func loadAnalysisOverviewDailyStatsWithFilter(db *gorm.DB, filter dto.UsageQuery
 	return loadAnalysisOverviewStatProjection(query, filter, start, end, "daily", activeFields)
 }
 
+var storedAnalysisProjectionFixedColumns = [...]string{
+	"bucket_start",
+	"api_group_key",
+	"model",
+	"auth_index",
+	"request_count",
+	"input_tokens",
+	"output_tokens",
+	"reasoning_tokens",
+	"cache_read_tokens",
+	"cache_creation_tokens",
+	"total_tokens",
+	"cost_usd",
+	"unavailable_cost_count",
+	"speed_tps_sum",
+	"speed_sample_count",
+}
+
+func storedAnalysisProjectionColumns() string {
+	return strings.Join(storedAnalysisProjectionFixedColumns[:], ", ")
+}
+
+func loadStoredAnalysisOverviewHourlyStatsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time) ([]analysisOverviewStatProjection, error) {
+	query := db.Model(&entities.UsageOverviewHourlyStat{}).
+		Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_hourly_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	return loadAnalysisOverviewStatProjectionWithColumns(query, filter, start, end, "hourly", storedAnalysisProjectionColumns())
+}
+
+func loadStoredAnalysisOverviewDailyStatsWithFilter(db *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time) ([]analysisOverviewStatProjection, error) {
+	query := db.Model(&entities.UsageOverviewDailyStat{}).
+		Joins("INNER JOIN cpa_api_keys ON cpa_api_keys.api_key = usage_overview_daily_stats.api_group_key AND cpa_api_keys.is_deleted = ?", false)
+	return loadAnalysisOverviewStatProjectionWithColumns(query, filter, start, end, "daily", storedAnalysisProjectionColumns())
+}
+
 func loadAnalysisOverviewStatProjection(query *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, grain string, activeFields pricing.ActiveFields) ([]analysisOverviewStatProjection, error) {
+	return loadAnalysisOverviewStatProjectionWithColumns(query, filter, start, end, grain, analysisOverviewProjectionColumns(activeFields))
+}
+
+func loadAnalysisOverviewStatProjectionWithColumns(query *gorm.DB, filter dto.UsageQueryFilter, start, end time.Time, grain, columns string) ([]analysisOverviewStatProjection, error) {
 	rows := make([]analysisOverviewStatProjection, 0)
-	query = query.
-		Select(analysisOverviewProjectionColumns(activeFields)).
-		Where("bucket_start >= ? AND bucket_start < ?", timeutil.FormatStorageTime(start), timeutil.FormatStorageTime(end)).
-		Order("bucket_start asc")
+	query = query.Select(columns).Order("bucket_start asc")
 	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
 		query = query.Where("api_group_key = ?", apiGroupKey)
 	}
+	buckets := overviewBucketRead(start, end, grain)
+	if buckets.stableOffset {
+		query = query.Where("bucket_start >= ? AND bucket_start < ?", timeutil.FormatStorageTime(start), timeutil.FormatStorageTime(end))
+	} else {
+		query = buckets.query(query)
+	}
 	if err := query.Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("load usage overview %s stats: %w", grain, err)
+	}
+	if !buckets.stableOffset {
+		for index := range rows {
+			rows[index].BucketStart = buckets.displayStart(rows[index].BucketStart)
+		}
 	}
 	return rows, nil
 }

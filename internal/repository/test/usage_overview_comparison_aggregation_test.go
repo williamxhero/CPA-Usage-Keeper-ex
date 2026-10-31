@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/repository/dto"
 )
@@ -25,7 +24,7 @@ func TestOverviewComparisonSplitAggregationMatchesEvents(t *testing.T) {
 					end = start.Add(3 * time.Hour)
 				}
 				ids := []entities.UsageIdentity{
-					{AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "file-a", Name: "same"},
+					{AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "file-a", Name: "same"},
 					{AuthType: entities.UsageIdentityAuthTypeAIProvider, Identity: "provider-a", Name: "same"},
 				}
 				if err := db.Create(&ids).Error; err != nil {
@@ -48,22 +47,36 @@ func TestOverviewComparisonSplitAggregationMatchesEvents(t *testing.T) {
 						}
 					}
 				}
-				// 非可加的历史计费值也必须继续逐行归一化，不能以总 Token 推导价格。
+				// 非可加的历史 Token 不影响已存费用，统计不得重新按 Token 推导价格。
 				events[0].InputTokens = -3
 				events[1].CacheReadTokens = 999
+				for i := range events {
+					cost, available := float64(i+1)/100, i%7 != 0
+					events[i].CostUSD, events[i].CostAvailable = &cost, &available
+				}
 				if err := db.Create(&events).Error; err != nil {
 					t.Fatal(err)
 				}
 				if err := repository.AggregateUsageOverviewStats(context.Background(), db, end); err != nil {
 					t.Fatal(err)
 				}
-				resolver := repositoryPricingResolver(t, []pricing.RuleConfig{{Key: "api_group_key", Value: "key-a", Multiplier: 2}, {Key: "service_tier", Value: "priority", Multiplier: 3}})
 				filter := dto.UsageQueryFilter{Range: "custom", CustomUnit: unit, StartTime: &start, EndTime: &end, EndExclusive: true, QueryNow: &end, ComparisonOnly: true, APIGroupKey: scope}
-				got, err := repository.BuildUsageOverviewWithFilter(db, filter, resolver)
+				got, err := repository.BuildUsageOverviewComparisonsWithFilterAndRecentCache(db, filter, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
+				storedReader, err := repository.NewStoredUsageComparisonReader(db)
+				if err != nil {
+					t.Fatal(err)
+				}
+				stored, err := storedReader.Read(filter)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Preserve current fact/trend checks using the fork's AuthFiles name;
+				// check original historical amounts on the explicit persisted reader.
 				dimensions := []map[string]*dto.UsageComparisonItemRecord{got.Comparisons.Models, got.Comparisons.APIKeys, got.Comparisons.AuthFiles, got.Comparisons.AIProviders}
+				storedDimensions := []map[string]*dto.StoredUsageComparisonItemRecord{stored.Models, stored.APIKeys, stored.Credentials, stored.AIProviders}
 				for dim, items := range dimensions {
 					expected := make(map[string]*dto.UsageComparisonItemRecord)
 					for _, e := range events {
@@ -100,9 +113,8 @@ func TestOverviewComparisonSplitAggregationMatchesEvents(t *testing.T) {
 						item.CacheCreationTokens += e.CacheCreationTokens
 						item.ReasoningTokens += e.ReasoningTokens
 						item.TotalTokens += e.TotalTokens
-						price := resolver.Calculate(repository.UsageEventCostSubject(e))
-						item.CostUSD += price.Cost.TotalCostUSD
-						item.CostAvailable = item.CostAvailable && price.Available
+						item.CostUSD += *e.CostUSD
+						item.CostAvailable = item.CostAvailable && *e.CostAvailable
 						bucket := e.Timestamp.Truncate(time.Hour).Format(time.RFC3339Nano)
 						if unit == "day" {
 							bucket = e.Timestamp.Format(time.DateOnly)
@@ -112,20 +124,36 @@ func TestOverviewComparisonSplitAggregationMatchesEvents(t *testing.T) {
 					if len(items) != len(expected) {
 						t.Fatalf("dimension %d items=%d want %d", dim, len(items), len(expected))
 					}
+					if len(storedDimensions[dim]) != len(expected) {
+						t.Fatalf("stored dimension %d items=%d want %d", dim, len(storedDimensions[dim]), len(expected))
+					}
 					for key, want := range expected {
 						item := items[key]
 						if item == nil {
 							t.Fatalf("missing dimension %d key %s", dim, key)
 						}
-						if item.Requests != want.Requests || item.Failures != want.Failures || item.TotalTokens != want.TotalTokens || item.InputTokens != want.InputTokens || item.OutputTokens != want.OutputTokens || item.CacheReadTokens != want.CacheReadTokens || item.CacheCreationTokens != want.CacheCreationTokens || item.ReasoningTokens != want.ReasoningTokens || item.CostAvailable != want.CostAvailable || math.Abs(item.CostUSD-want.CostUSD) > 1e-9 {
+						if item.Requests != want.Requests || item.Failures != want.Failures || item.TotalTokens != want.TotalTokens || item.InputTokens != want.InputTokens || item.OutputTokens != want.OutputTokens || item.CacheReadTokens != want.CacheReadTokens || item.CacheCreationTokens != want.CacheCreationTokens || item.ReasoningTokens != want.ReasoningTokens {
 							t.Fatalf("dimension %d key %s totals: got %+v want %+v", dim, key, item, want)
+						}
+						if item.CostAvailable || item.CostUSD != 0 {
+							t.Fatalf("current dimension %d key %s invented a price without a catalog: %+v", dim, key, item)
+						}
+						persisted := storedDimensions[dim][key]
+						if persisted == nil || persisted.Requests != want.Requests || persisted.Failures != want.Failures || persisted.TotalTokens != want.TotalTokens || persisted.InputTokens != want.InputTokens || persisted.OutputTokens != want.OutputTokens || persisted.CacheReadTokens != want.CacheReadTokens || persisted.CacheCreationTokens != want.CacheCreationTokens || persisted.ReasoningTokens != want.ReasoningTokens || persisted.StoredCostAvailable != want.CostAvailable || math.Abs(persisted.StoredCostUSD-want.CostUSD) > 1e-9 {
+							t.Fatalf("stored dimension %d key %s totals: got %+v want %+v", dim, key, persisted, want)
 						}
 						if len(item.TokenBuckets) != len(want.TokenBuckets) {
 							t.Fatalf("dimension %d key %s unexpected buckets: %v", dim, key, item.TokenBuckets)
 						}
+						if len(persisted.TokenBuckets) != len(want.TokenBuckets) {
+							t.Fatalf("stored dimension %d key %s unexpected buckets: %v", dim, key, persisted.TokenBuckets)
+						}
 						for bucket, tokens := range want.TokenBuckets {
 							if item.TokenBuckets[bucket] != tokens {
 								t.Fatalf("dimension %d key %s bucket %s got %d want %d", dim, key, bucket, item.TokenBuckets[bucket], tokens)
+							}
+							if persisted.TokenBuckets[bucket] != tokens {
+								t.Fatalf("stored dimension %d key %s bucket %s got %d want %d", dim, key, bucket, persisted.TokenBuckets[bucket], tokens)
 							}
 						}
 					}

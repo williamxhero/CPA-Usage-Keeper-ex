@@ -26,7 +26,9 @@ func TestRealtimeInsightsUseVisibleCacheWindowWithoutRawQueries(t *testing.T) {
 				{EventKey: "other-key", Timestamp: end.Add(-time.Second), APIGroupKey: "key-b", Model: "model-b", InputTokens: 10000, TotalTokens: 10000},
 				{EventKey: "excluded-end", Timestamp: end, APIGroupKey: "key-a", Model: "model-a", TotalTokens: 8000},
 			}
-			if err := db.Create(&events).Error; err != nil {
+			events[1].CostUSD = overviewCostPtr(0.00005)
+			events[1].CostAvailable = overviewAvailabilityPtr(true)
+			if err := db.Create(priceOverviewFixtureEvents(t, db, events)).Error; err != nil {
 				t.Fatal(err)
 			}
 			cache, err := repository.NewUsageRecentEventCache(db, repository.UsageRecentEventCacheOptions{Now: func() time.Time { return end }})
@@ -35,7 +37,7 @@ func TestRealtimeInsightsUseVisibleCacheWindowWithoutRawQueries(t *testing.T) {
 			}
 			t.Cleanup(cache.Close)
 			queries := captureOverviewDataQueries(t, db, "insights_"+window)
-			result, err := repository.BuildUsageOverviewRealtimeWithFilterAndRecentCache(db, repodto.UsageQueryFilter{RealtimeWindow: window, RealtimeEndTime: &end, APIGroupKey: "key-a"}, cache, repositoryPricingResolver(t, nil))
+			result, err := repository.BuildStoredUsageRealtimeWithFilterAndRecentCache(db, repodto.UsageQueryFilter{RealtimeWindow: window, RealtimeEndTime: &end, APIGroupKey: "key-a"}, cache)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -43,7 +45,7 @@ func TestRealtimeInsightsUseVisibleCacheWindowWithoutRawQueries(t *testing.T) {
 			if s.Requests != 3 || s.Failures != 1 || s.TokenRequests != 1 || s.CachedRequests != 1 || s.TotalTokens != 120 || s.InputTokens != 100 || s.OutputTokens != 20 || s.ReasoningTokens != 5 || s.CacheReadTokens != 40 || s.CacheCreationTokens != 10 {
 				t.Fatalf("window totals included warmup, other key, failure tokens or end: %+v", s)
 			}
-			if !s.CostAvailable || math.Abs(s.CostUSD-0.00005) > 1e-9 {
+			if !s.StoredCostAvailable || math.Abs(s.StoredCostUSD-0.00005) > 1e-9 {
 				t.Fatalf("window cost: %+v", s)
 			}
 			if len(result.Insights.Outcomes) != 30 {
@@ -67,21 +69,22 @@ func TestRealtimeInsightsUseVisibleCacheWindowWithoutRawQueries(t *testing.T) {
 func TestRealtimeInsightsKeepMissingCostAndEmptyWindowDistinct(t *testing.T) {
 	db := openTestDatabase(t)
 	end := time.Now().Truncate(time.Second)
-	if err := db.Create(&entities.UsageEvent{EventKey: "missing-price", Timestamp: end.Add(-time.Minute), Model: "unpriced", TotalTokens: 100, InputTokens: 100}).Error; err != nil {
+	zeroCost, unavailable := 0.0, false
+	if err := db.Create(&entities.UsageEvent{EventKey: "missing-price", Timestamp: end.Add(-time.Minute), Model: "unpriced", TotalTokens: 100, InputTokens: 100, CostUSD: &zeroCost, CostAvailable: &unavailable}).Error; err != nil {
 		t.Fatal(err)
 	}
-	result, err := repository.BuildUsageOverviewRealtimeWithFilter(db, repodto.UsageQueryFilter{RealtimeWindow: "15m", RealtimeEndTime: &end}, emptyPricingResolverForTest())
+	result, err := repository.BuildStoredUsageRealtimeWithFilterAndRecentCache(db, repodto.UsageQueryFilter{RealtimeWindow: "15m", RealtimeEndTime: &end}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Insights.Summary.CostAvailable || result.Insights.Summary.TotalTokens != 100 {
+	if result.Insights.Summary.StoredCostAvailable || result.Insights.Summary.TotalTokens != 100 {
 		t.Fatal("missing price must not become a known zero cost")
 	}
-	result, err = repository.BuildUsageOverviewRealtimeWithFilter(db, repodto.UsageQueryFilter{RealtimeWindow: "15m", RealtimeEndTime: &end, APIGroupKey: "unused"}, emptyPricingResolverForTest())
+	result, err = repository.BuildStoredUsageRealtimeWithFilterAndRecentCache(db, repodto.UsageQueryFilter{RealtimeWindow: "15m", RealtimeEndTime: &end, APIGroupKey: "unused"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Insights.Summary.CostAvailable || result.Insights.Summary.Requests != 0 || len(result.Insights.Outcomes) != 30 {
+	if !result.Insights.Summary.StoredCostAvailable || result.Insights.Summary.Requests != 0 || len(result.Insights.Outcomes) != 30 {
 		t.Fatal("empty window should retain an explicit zero summary and bounded timeline")
 	}
 }

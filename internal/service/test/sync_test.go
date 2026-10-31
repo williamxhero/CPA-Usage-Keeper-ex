@@ -78,9 +78,9 @@ func TestProcessRedisUsageInboxPersistsEventsWithoutSnapshot(t *testing.T) {
 	for _, asynchronous := range []bool{false, true} {
 		t.Run(fmt.Sprintf("asynchronous=%t", asynchronous), func(t *testing.T) {
 			db := openSyncTestDatabase(t)
-			rows := seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","endpoint":"/v1/messages","auth_type":"api_key","model":"sonnet","request_id":"process-only","tokens":{"input_tokens":1,"output_tokens":2}}`)
+			rows := seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","endpoint":"/v1/messages","auth_type":"api_key","model":"sonnet","execution_id":"fixture-execution","request_id":"process-only","tokens":{"input_tokens":1,"output_tokens":2}}`)
 			notifier := &recordingUsageHeaderQuotaAppender{allowed: true}
-			options := SyncServiceOptions{BaseURL: "https://cpa.example.com"}
+			options := SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"}
 			if asynchronous {
 				options.UsageAggregationNotifier = notifier
 				options.UsageHeaderQuota = notifier
@@ -132,9 +132,9 @@ func TestProcessRedisUsageInboxNotifiesRecentCacheAfterTransactionCommit(t *test
 	for _, allowed := range []bool{true, false} {
 		t.Run(fmt.Sprintf("accepted=%t", allowed), func(t *testing.T) {
 			db := openSyncTestDatabase(t)
-			seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","auth_type":"oauth","source":"auth-user@example.com","auth_index":"auth-1","model":"sonnet","request_id":"notify-cache","tokens":{"input_tokens":1,"output_tokens":2}}`)
+			seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","auth_type":"oauth","source":"auth-user@example.com","auth_index":"auth-1","model":"sonnet","execution_id":"fixture-execution","request_id":"notify-cache","tokens":{"input_tokens":1,"output_tokens":2}}`)
 			cache := &recordingRecentUsageAppender{allowed: allowed}
-			service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+			service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 				BaseURL:           "https://cpa.example.com",
 				RecentUsageEvents: cache,
 			})
@@ -158,7 +158,7 @@ func TestProcessRedisUsageInboxNotifiesRecentCacheAfterTransactionCommit(t *test
 
 func TestProcessRedisUsageInboxReturnsBatchSignalWhenTransactionCannotStart(t *testing.T) {
 	db := openSyncTestDatabase(t)
-	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","request_id":"transaction-start-fails","tokens":{"input_tokens":1,"output_tokens":2}}`)
+	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","execution_id":"fixture-execution","request_id":"transaction-start-fails","tokens":{"input_tokens":1,"output_tokens":2}}`)
 	sqlDB, err := db.DB()
 	if err != nil {
 		t.Fatalf("load sql database: %v", err)
@@ -176,7 +176,7 @@ func TestProcessRedisUsageInboxReturnsBatchSignalWhenTransactionCannotStart(t *t
 		t.Fatalf("register query callback returned error: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Callback().Query().Remove(callbackName) })
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err == nil {
@@ -199,7 +199,7 @@ func TestProcessRedisUsageInboxNotifiesUsageHeaderQuotaAfterTransactionCommit(t 
 			"auth_type":"oauth",
 			"auth_index":"codex-auth",
 			"model":"gpt-5.5",
-			"request_id":"header-quota-commit",
+			"execution_id":"fixture-execution","request_id":"header-quota-commit",
 			"tokens":{"input_tokens":1,"output_tokens":2},
 			"response_headers":{
 				"X-Codex-Plan-Type":["pro"],
@@ -213,7 +213,7 @@ func TestProcessRedisUsageInboxNotifiesUsageHeaderQuotaAfterTransactionCommit(t 
 				t.Fatalf("seed inbox row: %v", err)
 			}
 			appender := &recordingUsageHeaderQuotaAppender{allowed: allowed}
-			service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+			service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 				BaseURL:                  "https://cpa.example.com",
 				UsageAggregationNotifier: appender,
 				UsageHeaderQuota:         appender,
@@ -250,7 +250,7 @@ func TestProcessRedisUsageInboxNotifiesAggregationRunnerBeforeOverviewAggregatio
 			"auth_type":"oauth",
 			"auth_index":"codex-auth",
 			"model":"gpt-5.5",
-			"request_id":"header-quota-after-aggregation",
+			"execution_id":"fixture-execution","request_id":"header-quota-after-aggregation",
 			"tokens":{"input_tokens":10,"output_tokens":20,"total_tokens":30},
 			"response_headers":{
 				"X-Codex-Primary-Used-Percent":["4"],
@@ -263,7 +263,7 @@ func TestProcessRedisUsageInboxNotifiesAggregationRunnerBeforeOverviewAggregatio
 		t.Fatalf("seed inbox row: %v", err)
 	}
 	appender := &aggregationAwareUsageHeaderQuotaAppender{db: db}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		UsageAggregationNotifier: appender,
 		UsageHeaderQuota:         appender,
@@ -299,7 +299,7 @@ func TestProcessRedisUsageInboxForwardsStructuredUsageHeaderSnapshotsToQuotaServ
 				"auth_type":"oauth",
 				"auth_index":"codex-auth",
 				"model":"gpt-5.5",
-				"request_id":"header-quota-old",
+				"execution_id":"fixture-execution","request_id":"header-quota-old",
 				"tokens":{"input_tokens":1,"output_tokens":2},
 				"response_headers":{
 					"X-Codex-Primary-Used-Percent":["4"],
@@ -317,7 +317,7 @@ func TestProcessRedisUsageInboxForwardsStructuredUsageHeaderSnapshotsToQuotaServ
 				"auth_type":"oauth",
 				"auth_index":"codex-auth",
 				"model":"gpt-5.5",
-				"request_id":"header-quota-new",
+				"execution_id":"fixture-execution","request_id":"header-quota-new",
 				"tokens":{"input_tokens":1,"output_tokens":2},
 				"response_headers":{
 					"X-Codex-Primary-Used-Percent":["8"],
@@ -335,7 +335,7 @@ func TestProcessRedisUsageInboxForwardsStructuredUsageHeaderSnapshotsToQuotaServ
 				"auth_type":"oauth",
 				"auth_index":"other-codex-auth",
 				"model":"gpt-5.5",
-				"request_id":"header-quota-other",
+				"execution_id":"fixture-execution","request_id":"header-quota-other",
 				"tokens":{"input_tokens":1,"output_tokens":2},
 				"response_headers":{
 					"X-Codex-Primary-Used-Percent":["20"],
@@ -349,7 +349,7 @@ func TestProcessRedisUsageInboxForwardsStructuredUsageHeaderSnapshotsToQuotaServ
 		t.Fatalf("seed inbox rows: %v", err)
 	}
 	appender := &recordingUsageHeaderQuotaAppender{allowed: true}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		UsageAggregationNotifier: appender,
 		UsageHeaderQuota:         appender,
@@ -390,7 +390,7 @@ func TestProcessRedisUsageInboxIgnoresIncompleteUsageHeaderQuotaSnapshotDuringCo
 				"auth_type":"oauth",
 				"auth_index":"codex-auth",
 				"model":"gpt-5.5",
-				"request_id":"header-quota-valid-earlier",
+				"execution_id":"fixture-execution","request_id":"header-quota-valid-earlier",
 				"tokens":{"input_tokens":1,"output_tokens":2},
 				"response_headers":{
 					"X-Codex-Primary-Used-Percent":["4"],
@@ -408,7 +408,7 @@ func TestProcessRedisUsageInboxIgnoresIncompleteUsageHeaderQuotaSnapshotDuringCo
 				"auth_type":"oauth",
 				"auth_index":"codex-auth",
 				"model":"gpt-5.5",
-				"request_id":"header-quota-incomplete-later",
+				"execution_id":"fixture-execution","request_id":"header-quota-incomplete-later",
 				"tokens":{"input_tokens":1,"output_tokens":2},
 				"response_headers":{
 					"X-Codex-Primary-Used-Percent":["8"],
@@ -421,7 +421,7 @@ func TestProcessRedisUsageInboxIgnoresIncompleteUsageHeaderQuotaSnapshotDuringCo
 		t.Fatalf("seed inbox rows: %v", err)
 	}
 	appender := &recordingUsageHeaderQuotaAppender{allowed: true}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		UsageAggregationNotifier: appender,
 		UsageHeaderQuota:         appender,
@@ -452,7 +452,7 @@ func TestProcessRedisUsageInboxRollsBackEventsAndNotificationsWhenProcessedMarkF
 			"auth_type":"oauth",
 			"auth_index":"codex-auth",
 			"model":"gpt-5.5",
-			"request_id":"header-quota-rollback",
+			"execution_id":"fixture-execution","request_id":"header-quota-rollback",
 			"tokens":{"input_tokens":1,"output_tokens":2},
 			"response_headers":{
 				"X-Codex-Primary-Used-Percent":["4"],
@@ -469,7 +469,7 @@ func TestProcessRedisUsageInboxRollsBackEventsAndNotificationsWhenProcessedMarkF
 	}
 	appender := &recordingUsageHeaderQuotaAppender{allowed: true}
 	cache := &recordingRecentUsageAppender{allowed: true}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		UsageAggregationNotifier: appender,
 		UsageHeaderQuota:         appender,
@@ -496,13 +496,13 @@ func TestProcessRedisUsageInboxNotifiesEventsWithoutUsageHeaderQuotaSnapshot(t *
 	db := openSyncTestDatabase(t)
 	if _, err := repository.InsertRedisUsageInboxMessages(db, []dto.RedisInboxInsert{{
 		Source:     redisUsageInboxTestSource,
-		RawMessage: `{"timestamp":"2026-06-22T11:10:43+08:00","provider":"codex","auth_type":"oauth","auth_index":"codex-auth","model":"gpt-5.5","request_id":"header-quota-missing","tokens":{"input_tokens":1,"output_tokens":2}}`,
+		RawMessage: `{"timestamp":"2026-06-22T11:10:43+08:00","provider":"codex","auth_type":"oauth","auth_index":"codex-auth","model":"gpt-5.5","execution_id":"fixture-execution","request_id":"header-quota-missing","tokens":{"input_tokens":1,"output_tokens":2}}`,
 		PoppedAt:   time.Date(2026, 6, 22, 11, 10, 43, 0, time.Local),
 	}}); err != nil {
 		t.Fatalf("seed inbox row: %v", err)
 	}
 	appender := &recordingUsageHeaderQuotaAppender{allowed: true}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		UsageAggregationNotifier: appender,
 		UsageHeaderQuota:         appender,
@@ -522,7 +522,7 @@ func TestProcessRedisUsageInboxNotifiesEventsWithoutUsageHeaderQuotaSnapshot(t *
 
 func TestProcessRedisUsageInboxSkipsAggregationWhenInboxAndEventsAreEmpty(t *testing.T) {
 	db := openSyncTestDatabase(t)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
@@ -543,13 +543,13 @@ func TestProcessRedisUsageInboxSkipsAggregationWhenInboxAndEventsAreEmpty(t *tes
 func TestProcessRedisUsageInboxLeavesOverviewCatchUpToRunnerWhenInboxIsEmpty(t *testing.T) {
 	// 准备：插入尚未聚合的 raw event，并显式注入生产 aggregation notifier。
 	db := openSyncTestDatabase(t)
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{storedUsageEventFee(entities.UsageEvent{
 		EventKey: "stale-event", APIGroupKey: "provider-a", Model: "claude-sonnet", Timestamp: time.Date(2026, 4, 27, 8, 0, 0, 0, time.UTC), TotalTokens: 10,
-	}}); err != nil {
+	}, 0, true)}); err != nil {
 		t.Fatalf("InsertUsageEvents returned error: %v", err)
 	}
 	notifier := &recordingUsageHeaderQuotaAppender{allowed: true}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com", UsageAggregationNotifier: notifier})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com", UsageAggregationNotifier: notifier})
 
 	// 执行：空 inbox 不替后台 Runner 追平启动前已存在的 event。
 	result, err := service.ProcessRedisUsageInbox(context.Background())
@@ -577,7 +577,7 @@ func TestProcessRedisUsageInboxNormalizesClaudeTokensForOAuthProvider(t *testing
 			"auth_type":"oauth",
 			"auth_index":"auth-claude",
 			"model":"claude-sonnet",
-			"request_id":"oauth-claude-cache",
+			"execution_id":"fixture-execution","request_id":"oauth-claude-cache",
 			"tokens":{
 				"input_tokens":100,
 				"output_tokens":30,
@@ -587,7 +587,7 @@ func TestProcessRedisUsageInboxNormalizesClaudeTokensForOAuthProvider(t *testing
 				"total_tokens":160
 			}
 		}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
@@ -620,7 +620,7 @@ func TestProcessRedisUsageInboxNormalizesAPIKeyTokensByUsageIdentityType(t *test
 			"auth_type":"api_key",
 			"auth_index":"provider-auth-index",
 			"model":"claude-sonnet",
-			"request_id":"apikey-claude-cache",
+			"execution_id":"fixture-execution","request_id":"apikey-claude-cache",
 			"tokens":{
 				"input_tokens":100,
 				"output_tokens":30,
@@ -629,7 +629,7 @@ func TestProcessRedisUsageInboxNormalizesAPIKeyTokensByUsageIdentityType(t *test
 				"total_tokens":160
 			}
 		}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	if _, err := service.ProcessRedisUsageInbox(context.Background()); err != nil {
 		t.Fatalf("ProcessRedisUsageInbox returned error: %v", err)
@@ -644,7 +644,7 @@ func TestProcessRedisUsageInboxNormalizesGeminiFamilyToCodexTokenFormat(t *testi
 	db := openSyncTestDatabase(t)
 	if err := db.Create(&entities.UsageIdentity{
 		Name:         "Gemini CLI",
-		AuthType:     entities.UsageIdentityAuthTypeAuthFile,
+		AuthType:     entities.UsageIdentityAuthTypeCredential,
 		AuthTypeName: "oauth",
 		Identity:     "gemini-auth-index",
 		Type:         "gemini-cli",
@@ -658,7 +658,7 @@ func TestProcessRedisUsageInboxNormalizesGeminiFamilyToCodexTokenFormat(t *testi
 			"auth_type":"oauth",
 			"auth_index":"gemini-auth-index",
 			"model":"gemini-2.5-pro",
-			"request_id":"gemini-thinking",
+			"execution_id":"fixture-execution","request_id":"gemini-thinking",
 			"tokens":{
 				"input_tokens":11,
 				"output_tokens":7,
@@ -667,7 +667,7 @@ func TestProcessRedisUsageInboxNormalizesGeminiFamilyToCodexTokenFormat(t *testi
 				"total_tokens":21
 			}
 		}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	if _, err := service.ProcessRedisUsageInbox(context.Background()); err != nil {
 		t.Fatalf("ProcessRedisUsageInbox returned error: %v", err)
@@ -680,11 +680,11 @@ func TestProcessRedisUsageInboxNormalizesGeminiFamilyToCodexTokenFormat(t *testi
 
 func TestProcessRedisUsageInboxDoesNotFallbackWhenUsageTypeLookupErrors(t *testing.T) {
 	db := openSyncTestDatabase(t)
-	rows := seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"Team Display Name","auth_type":"apikey","auth_index":"provider-auth-index","model":"claude-sonnet","request_id":"type-lookup-error","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":160}}`)
+	rows := seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"Team Display Name","auth_type":"apikey","auth_index":"provider-auth-index","model":"claude-sonnet","execution_id":"fixture-execution","request_id":"type-lookup-error","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":160}}`)
 	if err := db.Migrator().DropTable(&entities.UsageIdentity{}); err != nil {
 		t.Fatalf("drop usage identity table: %v", err)
 	}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "load active usage identity types for redis usage") {
@@ -728,7 +728,7 @@ func TestBuildUsageEventTypeResolverBatchesAPIKeyIdentityLookup(t *testing.T) {
 	}
 	messages := make([]string, len(events))
 	for i, event := range events {
-		messages[i] = fmt.Sprintf(`{"timestamp":"2026-04-27T08:00:00Z","request_id":"%s","auth_type":"apikey","auth_index":"%s","model":"claude-sonnet","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":160}}`, event.AuthIndex, event.AuthIndex)
+		messages[i] = fmt.Sprintf(`{"timestamp":"2026-04-27T08:00:00Z","execution_id":"fixture-execution","request_id":"%s","auth_type":"apikey","auth_index":"%s","model":"claude-sonnet","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":160}}`, event.AuthIndex, event.AuthIndex)
 	}
 	seedRedisInboxMessagesForTest(t, db, messages...)
 	usageIdentityQueries := 0
@@ -743,7 +743,7 @@ func TestBuildUsageEventTypeResolverBatchesAPIKeyIdentityLookup(t *testing.T) {
 	t.Cleanup(func() { _ = db.Callback().Query().Remove(callbackName) })
 
 	notifier := &recordingUsageAggregationNotifier{}
-	syncer := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com", UsageAggregationNotifier: notifier})
+	syncer := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com", UsageAggregationNotifier: notifier})
 	if _, err := syncer.ProcessRedisUsageInbox(context.Background()); err != nil {
 		t.Fatalf("process identity batch: %v", err)
 	}
@@ -773,8 +773,8 @@ func TestBuildUsageEventTypeResolverIgnoresBlankActiveType(t *testing.T) {
 		t.Fatalf("seed usage identities: %v", err)
 	}
 
-	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","request_id":"blank-active-type","auth_type":"apikey","auth_index":"blank-active-auth-index","model":"claude-sonnet","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10}}`)
-	syncer := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com", UsageAggregationNotifier: &recordingUsageAggregationNotifier{}})
+	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","execution_id":"fixture-execution","request_id":"blank-active-type","auth_type":"apikey","auth_index":"blank-active-auth-index","model":"claude-sonnet","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10}}`)
+	syncer := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com", UsageAggregationNotifier: &recordingUsageAggregationNotifier{}})
 	if _, err := syncer.ProcessRedisUsageInbox(context.Background()); err != nil {
 		t.Fatalf("process blank identity type: %v", err)
 	}
@@ -799,8 +799,8 @@ func TestProcessRedisUsageInboxFallsBackToDeletedUsageIdentityType(t *testing.T)
 	}).Error; err != nil {
 		t.Fatalf("seed deleted usage identity: %v", err)
 	}
-	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"Deleted Team","auth_type":"apikey","auth_index":"deleted-auth-index","model":"claude-sonnet","request_id":"deleted-identity-claude","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":160}}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"Deleted Team","auth_type":"apikey","auth_index":"deleted-auth-index","model":"claude-sonnet","execution_id":"fixture-execution","request_id":"deleted-identity-claude","tokens":{"input_tokens":100,"output_tokens":30,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":160}}`)
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	if _, err := service.ProcessRedisUsageInbox(context.Background()); err != nil {
 		t.Fatalf("ProcessRedisUsageInbox returned error: %v", err)
@@ -827,19 +827,19 @@ func TestProcessRedisUsageInboxUsesStrictTokensForKimiAndMissingType(t *testing.
 	_, err := repository.InsertRedisUsageInboxMessages(db, []dto.RedisInboxInsert{
 		{
 			Source:     redisUsageInboxTestSource,
-			RawMessage: `{"timestamp":"2026-04-27T08:00:00Z","provider":"Kimi","auth_type":"apikey","auth_index":"kimi-auth-index","model":"kimi-k2","request_id":"kimi-openai-style","tokens":{"input_tokens":100,"output_tokens":30,"cached_tokens":20,"cache_read_tokens":20,"cache_creation_tokens":10}}`,
+			RawMessage: `{"timestamp":"2026-04-27T08:00:00Z","provider":"Kimi","auth_type":"apikey","auth_index":"kimi-auth-index","model":"kimi-k2","execution_id":"fixture-execution","request_id":"kimi-openai-style","tokens":{"input_tokens":100,"output_tokens":30,"cached_tokens":20,"cache_read_tokens":20,"cache_creation_tokens":10}}`,
 			PoppedAt:   time.Date(2026, 4, 27, 8, 0, 0, 0, time.UTC),
 		},
 		{
 			Source:     redisUsageInboxTestSource,
-			RawMessage: `{"timestamp":"2026-04-27T08:00:00Z","provider":"Unknown","auth_type":"apikey","auth_index":"missing-auth-index","model":"unknown-model","request_id":"missing-type-default-style","tokens":{"input_tokens":100,"output_tokens":30,"reasoning_tokens":5,"cached_tokens":20,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":135}}`,
+			RawMessage: `{"timestamp":"2026-04-27T08:00:00Z","provider":"Unknown","auth_type":"apikey","auth_index":"missing-auth-index","model":"unknown-model","execution_id":"fixture-execution","request_id":"missing-type-default-style","tokens":{"input_tokens":100,"output_tokens":30,"reasoning_tokens":5,"cached_tokens":20,"cache_read_tokens":20,"cache_creation_tokens":10,"total_tokens":135}}`,
 			PoppedAt:   time.Date(2026, 4, 27, 8, 0, 0, 0, time.UTC),
 		},
 	})
 	if err != nil {
 		t.Fatalf("seed inbox rows: %v", err)
 	}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	if _, err := service.ProcessRedisUsageInbox(context.Background()); err != nil {
 		t.Fatalf("ProcessRedisUsageInbox returned error: %v", err)
@@ -890,10 +890,10 @@ func seedRedisInboxMessagesForTest(t *testing.T, db *gorm.DB, messages ...string
 func TestProcessRedisUsageInboxPersistsValidRowsWhenBatchContainsMalformedMessage(t *testing.T) {
 	db := openSyncTestDatabase(t)
 	seedRedisInboxMessagesForTest(t, db,
-		`{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","request_id":"redis-valid","tokens":{"input_tokens":1,"output_tokens":2}}`,
+		`{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","execution_id":"fixture-execution","request_id":"redis-valid","tokens":{"input_tokens":1,"output_tokens":2}}`,
 		`{bad-json}`,
 	)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "decode redis usage message") {
@@ -930,7 +930,7 @@ func TestProcessRedisUsageInboxPersistsValidRowsWhenBatchContainsMalformedMessag
 func TestProcessRedisUsageInboxMarksMalformedOnlyBatchWithoutSnapshot(t *testing.T) {
 	db := openSyncTestDatabase(t)
 	seedRedisInboxMessagesForTest(t, db, `{bad-json}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "decode redis usage message") {
@@ -958,7 +958,7 @@ func TestProcessRedisUsageInboxMarksFullMalformedBatch(t *testing.T) {
 		messages = append(messages, fmt.Sprintf("{bad-json-%d}", i))
 	}
 	seedRedisInboxMessagesForTest(t, db, messages...)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "decode redis usage message") {
@@ -970,15 +970,15 @@ func TestProcessRedisUsageInboxMarksFullMalformedBatch(t *testing.T) {
 	}
 }
 
-func TestProcessRedisUsageInboxLogsErrorAndMarksDecodeFailedWhenRequestIDMissing(t *testing.T) {
+func TestProcessRedisUsageInboxLogsErrorAndMarksDecodeFailedWhenExecutionIDMissing(t *testing.T) {
 	db := openSyncTestDatabase(t)
 	logs := captureSyncDebugLogs(t)
 	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","tokens":{"input_tokens":1,"output_tokens":2}}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "request_id is required") {
-		t.Fatalf("expected missing request_id warning, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "execution_id is required") {
+		t.Fatalf("expected missing execution_id warning, got %v", err)
 	}
 	if result == nil || result.Status != "completed_with_warnings" {
 		t.Fatalf("expected warning result, got %+v", result)
@@ -988,27 +988,27 @@ func TestProcessRedisUsageInboxLogsErrorAndMarksDecodeFailedWhenRequestIDMissing
 	if err := db.First(&inbox).Error; err != nil {
 		t.Fatalf("load inbox row: %v", err)
 	}
-	if inbox.Status != repository.RedisUsageInboxStatusDecodeFailed || !strings.Contains(inbox.LastError, "request_id is required") {
-		t.Fatalf("expected missing request_id decode_failed row, got %+v", inbox)
+	if inbox.Status != repository.RedisUsageInboxStatusDecodeFailed || !strings.Contains(inbox.LastError, "execution_id is required") {
+		t.Fatalf("expected missing execution_id decode_failed row, got %+v", inbox)
 	}
 	output := logs.String()
-	if !strings.Contains(output, "level=error") || !strings.Contains(output, "redis usage message decode failed") || !strings.Contains(output, "request_id is required") {
-		t.Fatalf("expected missing request_id error log, got:\n%s", output)
+	if !strings.Contains(output, "level=error") || !strings.Contains(output, "redis usage message decode failed") || !strings.Contains(output, "execution_id is required") {
+		t.Fatalf("expected missing execution_id error log, got:\n%s", output)
 	}
 }
 
 func TestProcessRedisUsageInboxDoesNotWatermarkFilterRedisInboxEvents(t *testing.T) {
 	db := openSyncTestDatabase(t)
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{storedUsageEventFee(entities.UsageEvent{
 		EventKey:    "future-watermark",
 		APIGroupKey: "claude",
 		Model:       "sonnet",
 		Timestamp:   time.Date(2026, 4, 28, 8, 0, 0, 0, time.UTC),
-	}}); err != nil {
+	}, 0, true)}); err != nil {
 		t.Fatalf("seed future event: %v", err)
 	}
-	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-26T07:00:00Z","provider":"claude","model":"sonnet","request_id":"old-but-unique","tokens":{"input_tokens":1,"output_tokens":2}}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-26T07:00:00Z","provider":"claude","model":"sonnet","execution_id":"fixture-execution","request_id":"old-but-unique","tokens":{"input_tokens":1,"output_tokens":2}}`)
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
@@ -1029,7 +1029,7 @@ func TestProcessRedisUsageInboxRetriesProcessFailedInbox(t *testing.T) {
 	poppedAt := time.Date(2026, 4, 27, 8, 0, 0, 0, time.UTC)
 	rows, err := repository.InsertRedisUsageInboxMessages(db, []dto.RedisInboxInsert{{
 		Source:     redisUsageInboxTestSource,
-		RawMessage: `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","request_id":"retry-process-failed","tokens":{"input_tokens":1,"output_tokens":2}}`,
+		RawMessage: `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","execution_id":"fixture-execution","request_id":"retry-process-failed","tokens":{"input_tokens":1,"output_tokens":2}}`,
 		PoppedAt:   poppedAt,
 	}})
 	if err != nil {
@@ -1038,7 +1038,7 @@ func TestProcessRedisUsageInboxRetriesProcessFailedInbox(t *testing.T) {
 	if err := repository.MarkRedisUsageInboxProcessFailed(db, rows[0].ID, errors.New("temporary insert failure")); err != nil {
 		t.Fatalf("mark process failed: %v", err)
 	}
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
@@ -1058,9 +1058,9 @@ func TestProcessRedisUsageInboxRetriesProcessFailedInbox(t *testing.T) {
 
 func TestProcessRedisUsageInboxKeepsDistinctRedisRequestIDsWithSameEventFields(t *testing.T) {
 	db := openSyncTestDatabase(t)
-	message := `{"timestamp":"2026-04-27T08:00:00Z","latency_ms":123,"source":"codex-a","auth_index":"1","failed":false,"api_key":"external-api-key","model":"claude-sonnet","request_id":"redis-request-1","tokens":{"input_tokens":10,"output_tokens":20,"reasoning_tokens":5,"cached_tokens":4,"total_tokens":39}}`
+	message := `{"timestamp":"2026-04-27T08:00:00Z","latency_ms":123,"source":"codex-a","auth_index":"1","failed":false,"api_key":"external-api-key","model":"claude-sonnet","execution_id":"fixture-execution","request_id":"redis-request-1","tokens":{"input_tokens":10,"output_tokens":20,"reasoning_tokens":5,"cached_tokens":4,"total_tokens":39}}`
 	seedRedisInboxMessagesForTest(t, db, message, strings.Replace(message, "redis-request-1", "redis-request-2", 1))
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	result, err := service.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
@@ -1076,8 +1076,8 @@ func TestProcessRedisUsageInboxWritesDebugLogsWithoutRawPayload(t *testing.T) {
 	db := openSyncTestDatabase(t)
 	logs := captureSyncDebugLogs(t)
 
-	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","request_id":"redis-log","api_key":"raw-secret-key","tokens":{"input_tokens":1,"output_tokens":2}}`)
-	service := NewSyncServiceWithOptions(db, SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	seedRedisInboxMessagesForTest(t, db, `{"timestamp":"2026-04-27T08:00:00Z","provider":"claude","model":"sonnet","execution_id":"fixture-execution","request_id":"redis-log","api_key":"raw-secret-key","tokens":{"input_tokens":1,"output_tokens":2}}`)
+	service := NewSyncServiceWithOptions(db, SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"})
 
 	_, err := service.ProcessRedisUsageInbox(context.Background())
 	if err != nil {

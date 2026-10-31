@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service/providermetadata"
 	"cpa-usage-keeper/internal/timeutil"
@@ -31,88 +32,110 @@ func (s *SyncService) syncMetadata(ctx context.Context, completeCredentialDirect
 	}
 	// 开始日志保持原有 debug 级别和 message。
 	logrus.Debug("metadata sync started")
+	// 远端读取前固定版本，覆盖远端快照已返回但本地 diff 尚未读取的竞争窗口。
+	credentialVersion := s.credentialMetadata.snapshotVersion()
 	// 同一轮 metadata 写入与兼容同步补算共用该时间；后台 Runner 使用自己的事务时间。
 	fetchedAt := timeutil.NormalizeStorageTime(s.now())
-	// Auth Files 先读取，但失败不跳过后续两类 metadata。
-	authFilesResult, authFilesErr := s.metadataFetcher.FetchAuthFiles(ctx)
+	// Credentials 先读取，但失败不跳过后续两类 metadata。
+	credentialsResult, credentialsErr := s.metadataFetcher.FetchCredentials(ctx)
 	// 管理 API Keys 保持第二个读取位置，失败同样不阻止 provider。
 	apiKeysResult, apiKeysErr := s.metadataFetcher.FetchManagementAPIKeys(ctx)
 	// 八个 provider endpoint 只在纯包内并发，返回按 registry 确定性归并的 snapshot。
 	providerSnapshot, providerFetchErr := providermetadata.Fetch(ctx, s.metadataFetcher)
 	if completeCredentialDirectory {
-		if authFilesErr == nil && authFilesResult == nil {
-			authFilesErr = fmt.Errorf("empty response")
+		if credentialsErr == nil && credentialsResult == nil {
+			credentialsErr = fmt.Errorf("empty response")
 		}
 		if apiKeysErr == nil && apiKeysResult == nil {
 			apiKeysErr = fmt.Errorf("empty response")
 		}
-	}
-	if completeCredentialDirectory && (authFilesErr != nil || apiKeysErr != nil || providerFetchErr != nil) {
-		// A credential refresh is authoritative only when every source scope
-		// completed. Do not enter any persistence transaction on a partial fetch.
-		return joinErrors(
-			wrapMetadataFetchError("fetch auth files", authFilesErr),
+		if err := joinErrors(
+			wrapMetadataFetchError("fetch credentials", credentialsErr),
 			wrapMetadataFetchError("fetch management api keys", apiKeysErr),
 			wrapMetadataFetchError("fetch provider metadata", providerFetchErr),
-		)
-	}
-	// Fetching does not hold the pricing writer lock. Relevant committed metadata
-	// and pricing publication are serialized with all admin pricing mutations.
-	if s.pricingCatalog != nil {
-		s.pricingCatalog.MutationMutex().Lock()
-	}
-	var authSyncErr, apiKeySyncErr, providerSyncErr, providerWarningErr error
-	if completeCredentialDirectory {
-		// Complete credential publication uses one outer writer transaction. The
-		// existing scoped helpers remain unchanged for legacy metadata callers.
-		transactionErr := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			authSyncErr = syncAuthFilesInTransaction(ctx, tx, authFilesResult, authFilesErr, fetchedAt)
-			if authSyncErr != nil {
-				return authSyncErr
-			}
-			apiKeySyncErr = syncManagementAPIKeysInTransaction(tx, apiKeysResult, apiKeysErr, fetchedAt)
-			if apiKeySyncErr != nil {
-				return apiKeySyncErr
-			}
-			providerSyncErr, providerWarningErr = persistProviderMetadataInTransaction(ctx, tx, providerSnapshot, providerFetchErr, fetchedAt)
-			if providerSyncErr != nil {
-				return providerSyncErr
-			}
-			return repository.EnsureCredentialPricingSubjects(tx, fetchedAt)
-		})
-		if transactionErr != nil && authSyncErr == nil && apiKeySyncErr == nil && providerSyncErr == nil {
-			providerSyncErr = transactionErr
+		); err != nil {
+			return err
 		}
-	} else {
-		// Legacy metadata callers retain the existing independent scope semantics.
-		authSyncErr = syncAuthFiles(ctx, s.db, authFilesResult, authFilesErr, fetchedAt)
-		apiKeySyncErr = syncManagementAPIKeys(s.db, apiKeysResult, apiKeysErr, fetchedAt)
-		providerSyncErr, providerWarningErr = persistProviderMetadata(ctx, s.db, providerSnapshot, providerFetchErr, fetchedAt)
 	}
-	// 三类持久化错误按 Auth Files、管理 key、provider 的既有顺序合并。
-	upsertErr := joinErrors(authSyncErr, apiKeySyncErr, providerSyncErr)
-	if s.pricingCatalog != nil {
-		var pricingErr error
-		if !completeCredentialDirectory || upsertErr == nil {
-			// Publish only the committed directory. Complete refresh failures retain
-			// the previous in-memory pricing snapshot and its credential ownership.
-			snapshot, loadErr := repository.LoadPricingSnapshot(ctx, s.db)
-			pricingErr = loadErr
+	var upsertErr, providerWarningErr error
+	completeApplied := true
+	// Fetch without either lock. Serialize DB publication and catalog replacement
+	// with pricing writers, then release before notifying or catching up usage.
+	func() {
+		if s.pricingCatalog != nil {
+			s.pricingCatalog.MutationMutex().Lock()
+			defer s.pricingCatalog.MutationMutex().Unlock()
+		}
+		if completeCredentialDirectory {
+			// One version permit covers every scope, commit and publication. An
+			// intervening completed mutation invalidates the whole remote directory,
+			// including management keys, not just the credential/provider subsets.
+			completeApplied, upsertErr = s.credentialMetadata.persistSnapshot(credentialVersion, func() error {
+				var candidate *pricing.Snapshot
+				err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+					if err := syncCredentialsInTransaction(ctx, tx, credentialsResult, nil, fetchedAt); err != nil {
+						return err
+					}
+					if err := syncManagementAPIKeysInTransaction(tx, apiKeysResult, nil, fetchedAt); err != nil {
+						return err
+					}
+					if err, _ := persistProviderMetadataInTransaction(ctx, tx, providerSnapshot, nil, fetchedAt); err != nil {
+						return err
+					}
+					if err := repository.EnsureCredentialPricingSubjects(tx, fetchedAt); err != nil {
+						return err
+					}
+					if s.pricingCatalog != nil {
+						var loadErr error
+						// Compile using the same writer transaction. A load/compile
+						// failure must not commit a directory the catalog cannot publish.
+						candidate, loadErr = repository.LoadPricingSnapshot(ctx, tx)
+						if loadErr != nil {
+							return fmt.Errorf("refresh pricing identity evidence failed")
+						}
+					}
+					return nil
+				})
+				if err == nil && s.pricingCatalog != nil {
+					// Never expose candidate identity/subject evidence before COMMIT.
+					s.pricingCatalog.Replace(candidate)
+				}
+				return err
+			})
+			return
+		}
+		// Legacy callers keep independent-source commits and management-key
+		// progress even when a local credential mutation supersedes the snapshot.
+		authApplied, authSyncErr := s.credentialMetadata.persistSnapshot(credentialVersion, func() error {
+			return syncCredentials(ctx, s.db, credentialsResult, credentialsErr, fetchedAt)
+		})
+		if !authApplied && credentialsErr != nil {
+			authSyncErr = fmt.Errorf("fetch credentials: %w", credentialsErr)
+		}
+		apiKeySyncErr := syncManagementAPIKeys(s.db, apiKeysResult, apiKeysErr, fetchedAt)
+		providerApplied, providerSyncErr := s.credentialMetadata.persistSnapshot(credentialVersion, func() error {
+			var persistErr error
+			persistErr, providerWarningErr = persistProviderMetadata(ctx, s.db, providerSnapshot, providerFetchErr, fetchedAt)
+			return persistErr
+		})
+		if !providerApplied && providerFetchErr != nil {
+			providerWarningErr = fmt.Errorf("fetch provider metadata: %w", providerFetchErr)
+		}
+		upsertErr = joinErrors(authSyncErr, apiKeySyncErr, providerSyncErr)
+		if s.pricingCatalog != nil {
+			snapshot, pricingErr := repository.LoadPricingSnapshot(ctx, s.db)
 			if pricingErr == nil {
 				s.pricingCatalog.Replace(snapshot)
-			} else if !completeCredentialDirectory {
+			} else {
 				s.pricingCatalog.Replace(s.pricingCatalog.Snapshot().WithoutCredentialAttribution())
+				upsertErr = joinErrors(upsertErr, fmt.Errorf("refresh pricing identity evidence failed"))
 			}
 		}
-		s.pricingCatalog.MutationMutex().Unlock()
-		if pricingErr != nil {
-			upsertErr = joinErrors(upsertErr, fmt.Errorf("refresh pricing identity evidence failed"))
-		}
-	}
+	}()
 	// aggregateErr 只承接没有 notifier 的兼容同步补算错误。
 	var aggregateErr error
 	// 任一数据库写入失败都阻止基于半成品 identity 发送通知或执行兼容补算。
-	if upsertErr == nil {
+	if upsertErr == nil && completeApplied {
 		// provider fetch warning 不属于持久化失败，因此仍允许已提交 identity 唤醒后台 runner。
 		if s.usageAggregation != nil {
 			// notifier 只写内存并发 wake，不在 metadata 热路径执行 SQLite 聚合事务。

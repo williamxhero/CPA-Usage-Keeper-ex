@@ -20,7 +20,7 @@ func TestResponsePreservesUpstreamHeaderAndStringBody(t *testing.T) {
 	if err := json.Unmarshal(response.Body, &body); err != nil {
 		t.Fatalf("decode upstream body string: %v", err)
 	}
-	if body != `{"available_count":1}` {
+	if body != `{"available_count":1}` || response.BodyText != body {
 		t.Fatalf("expected exact upstream body, got %q", body)
 	}
 }

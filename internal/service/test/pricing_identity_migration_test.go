@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/config"
-	"cpa-usage-keeper/internal/cpa/dto/authfiles"
+	"cpa-usage-keeper/internal/cpa/dto/credentials"
 	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
 	"cpa-usage-keeper/internal/cpa/dto/response"
 	"cpa-usage-keeper/internal/entities"
@@ -285,10 +285,10 @@ func TestIdentityMigrationScopedStaleRestoreTimeoutAndExactHistoricalEvidence(t 
 		t.Fatal(err)
 	}
 	fetcher := newMetadataTestFetcher()
-	oldFile := authfiles.AuthFile{AuthIndex: "synthetic-a", Email: "safe@example.invalid", Name: "synthetic.json", Type: "codex", Provider: "codex"}
+	oldFile := credentials.Credential{AuthIndex: "synthetic-a", Email: "safe@example.invalid", Name: "synthetic.json", Type: "codex", Provider: "codex"}
 	newFile := oldFile
 	newFile.AuthIndex = "rotated-index"
-	fetcher.setAuthFiles([]authfiles.AuthFile{newFile})
+	fetcher.setCredentials([]credentials.Credential{newFile})
 	syncer := service.NewSyncServiceWithOptions(f.db, service.SyncServiceOptions{BaseURL: "https://cpa.example.invalid", MetadataFetcher: fetcher, Now: func() time.Time { return f.now }, PricingCatalog: f.catalog})
 	if err := syncer.SyncMetadata(ctx); err != nil {
 		t.Fatal(err)
@@ -310,7 +310,7 @@ func TestIdentityMigrationScopedStaleRestoreTimeoutAndExactHistoricalEvidence(t 
 	closeCost(t, read(newFile.AuthIndex, "oauth"), 2)
 	closeCost(t, read(" rotated-index ", "oauth"), 5)
 	closeCost(t, read(newFile.AuthIndex, "apikey"), 5)
-	fetcher.authFilesErr = context.DeadlineExceeded
+	fetcher.credentialsErr = context.DeadlineExceeded
 	if err := syncer.SyncMetadata(ctx); err == nil {
 		t.Fatal("expected controlled timeout warning")
 	}
@@ -318,8 +318,8 @@ func TestIdentityMigrationScopedStaleRestoreTimeoutAndExactHistoricalEvidence(t 
 		t.Fatalf("timeout deleted association %+v", state.Bindings)
 	}
 	closeCost(t, read(newFile.AuthIndex, "oauth"), 2)
-	fetcher.authFilesErr = nil
-	fetcher.setAuthFiles([]authfiles.AuthFile{oldFile, newFile})
+	fetcher.credentialsErr = nil
+	fetcher.setCredentials([]credentials.Credential{oldFile, newFile})
 	if err := syncer.SyncMetadata(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -500,8 +500,8 @@ func TestIdentityMigrationProviderPartialFailurePreservesMultipleExactAssociatio
 		t.Fatal(err)
 	}
 	fetcher := newMetadataTestFetcher()
-	file := authfiles.AuthFile{AuthIndex: "synthetic-a", Name: "safe.json", Email: "safe@example.invalid", Type: "codex", Provider: "codex"}
-	fetcher.setAuthFiles([]authfiles.AuthFile{file})
+	file := credentials.Credential{AuthIndex: "synthetic-a", Name: "safe.json", Email: "safe@example.invalid", Type: "codex", Provider: "codex"}
+	fetcher.setCredentials([]credentials.Credential{file})
 	fetcher.standardResults["codex"] = &response.ProviderKeyConfigResult{StatusCode: 200, Payload: []providerconfig.ProviderKeyConfig{{AuthIndex: "rotated-api", APIKey: "synthetic-private-provider-key", Name: "Safe provider"}}}
 	syncer := service.NewSyncServiceWithOptions(f.db, service.SyncServiceOptions{BaseURL: "https://cpa.example.invalid", MetadataFetcher: fetcher, Now: func() time.Time { return f.now }, PricingCatalog: f.catalog})
 	if err := syncer.SyncMetadata(ctx); err != nil {

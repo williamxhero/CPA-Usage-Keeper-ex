@@ -18,7 +18,7 @@ const realtime: OverviewRealtimeBlock = {
   bucket_seconds: 30,
   token_velocity: [],
   latency_scatter: { points: [], total_points: 0, p95_ttft_ms: 0, p95_latency_ms: 0, max_ttft_ms: 0, max_latency_ms: 0 },
-  current_usage: { models: [], api_keys: [], auth_files: [], ai_providers: [] },
+  current_usage: { models: [], api_keys: [], credentials: [], ai_providers: [] },
   request_level: [],
   cache_level: [],
 }
@@ -131,5 +131,56 @@ describe('useUsageStatsStore', () => {
     const state = useUsageStatsStore.getState()
     expect(state.realtime?.window).toBe('15m')
     expect(state.realtimeError).toBe('')
+  })
+
+  it('forces a new overview request and ignores the late pre-recalculation response', async () => {
+    const old = Promise.withResolvers<unknown>()
+    const fresh = Promise.withResolvers<unknown>()
+    apiMocks.fetchUsageOverview.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
+    const oldLoad = useUsageStatsStore.getState().loadUsageStats({ range: '24h' })
+    const oldSignal = apiMocks.fetchUsageOverview.mock.calls[0][1] as AbortSignal
+    const freshLoad = useUsageStatsStore.getState().loadUsageStats({ range: '24h', force: true })
+
+    expect(apiMocks.fetchUsageOverview).toHaveBeenCalledTimes(2)
+    expect(oldSignal.aborted).toBe(true)
+    fresh.resolve({ usage: { total_requests: 1, total_cost: 2 } })
+    await freshLoad
+    // 模拟传输层没有响应 abort：旧成功响应也不得覆盖新费用。
+    old.resolve({ usage: { total_requests: 1, total_cost: 1 } })
+    await oldLoad
+    expect(useUsageStatsStore.getState().usage?.usage.total_cost).toBe(2)
+    expect(useUsageStatsStore.getState().loading).toBe(false)
+  })
+
+  it('forces a new realtime request without accepting the late previous result', async () => {
+    const old = Promise.withResolvers<OverviewRealtimeBlock>()
+    const fresh = Promise.withResolvers<OverviewRealtimeBlock>()
+    apiMocks.fetchUsageOverviewRealtime.mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
+    const oldLoaded = vi.fn()
+    const freshLoaded = vi.fn()
+    const oldLoad = useUsageStatsStore.getState().loadUsageStatsRealtime({ realtimeWindow: '15m', onLoaded: oldLoaded })
+    const oldSignal = apiMocks.fetchUsageOverviewRealtime.mock.calls[0][0].signal as AbortSignal
+    const freshLoad = useUsageStatsStore.getState().loadUsageStatsRealtime({ realtimeWindow: '15m', force: true, onLoaded: freshLoaded })
+
+    expect(apiMocks.fetchUsageOverviewRealtime).toHaveBeenCalledTimes(2)
+    expect(oldSignal.aborted).toBe(true)
+    const freshValue = { ...realtime, bucket_seconds: 60 }
+    fresh.resolve(freshValue)
+    await freshLoad
+    old.resolve(realtime)
+    await oldLoad
+    expect(useUsageStatsStore.getState().realtime).toEqual(freshValue)
+    expect(useUsageStatsStore.getState().realtimeLoading).toBe(false)
+    expect(oldLoaded).not.toHaveBeenCalled()
+    expect(freshLoaded).toHaveBeenCalledExactlyOnceWith(freshValue)
+  })
+
+  it('signals a committed successful response but never signals a handled request failure', async () => {
+    const onLoaded = vi.fn()
+    apiMocks.fetchUsageOverviewRealtime.mockResolvedValueOnce(realtime).mockRejectedValueOnce(new Error('failed'))
+    await useUsageStatsStore.getState().loadUsageStatsRealtime({ force: true, realtimeWindow: '15m', onLoaded })
+    expect(onLoaded).toHaveBeenCalledExactlyOnceWith(realtime)
+    await useUsageStatsStore.getState().loadUsageStatsRealtime({ force: true, realtimeWindow: '15m', onLoaded })
+    expect(onLoaded).toHaveBeenCalledTimes(1)
   })
 })

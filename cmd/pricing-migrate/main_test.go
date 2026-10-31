@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/repository"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -20,7 +21,7 @@ import (
 func newCLIDatabase(t *testing.T) (string, *gorm.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "private # database.db")
-	db, err := gorm.Open(sqlite.Open(repository.BuildSQLiteFileURI(path)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	db, err := gorm.Open(sqlite.Open(helper.BuildSQLiteFileURI(path)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		t.Fatal(err)
 	}

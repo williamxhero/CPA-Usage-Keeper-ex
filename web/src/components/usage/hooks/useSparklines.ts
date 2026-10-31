@@ -87,6 +87,7 @@ export function buildUsageSparklineSeries({ usage }: Omit<UseSparklinesOptions, 
 }
 
 export function useSparklines({ usage, loading }: UseSparklinesOptions): UseSparklinesReturn {
+  const initialLoading = loading && !usage;
   const series = useMemo(
     () => buildUsageSparklineSeries({ usage }),
     [usage]
@@ -98,7 +99,7 @@ export function useSparklines({ usage, loading }: UseSparklinesOptions): UseSpar
       color: string,
       backgroundColor: string
     ): SparklineBundle | null => {
-      if (loading || !input?.data?.length) {
+      if (initialLoading || !input?.data?.length) {
         return null;
       }
       return {
@@ -118,7 +119,7 @@ export function useSparklines({ usage, loading }: UseSparklinesOptions): UseSpar
         }
       };
     },
-    [loading]
+    [initialLoading]
   );
 
   const requestsSparkline = useMemo(

@@ -84,7 +84,31 @@ type RealtimeCurrentUsageRecord struct {
 	Models      []RealtimeUsageTopItemRecord
 	APIKeys     []RealtimeUsageTopItemRecord
 	AuthFiles   []RealtimeUsageTopItemRecord
+	Credentials []RealtimeUsageTopItemRecord
 	AIProviders []RealtimeUsageTopItemRecord
+}
+
+// RealtimeModelSpeedRecord 只承载可见缓存窗口两半的逐请求速度统计。
+type RealtimeModelSpeedRecord struct {
+	Available bool
+	Start     time.Time
+	Mid       time.Time
+	End       time.Time
+	Series    []RealtimeModelSpeedSeriesRecord
+}
+
+type RealtimeModelSpeedSeriesRecord struct {
+	Model            string
+	TotalTokens      int64
+	SpeedSampleCount int64
+	FirstHalf        RealtimeModelSpeedSampleRecord
+	SecondHalf       RealtimeModelSpeedSampleRecord
+}
+
+type RealtimeModelSpeedSampleRecord struct {
+	SpeedTPSSum      float64
+	SpeedSampleCount int64
+	MeanTPS          *float64
 }
 
 // UsageOverviewRealtimeRecord 是 Overview 页面实时图表区使用的数据块。
@@ -96,6 +120,7 @@ type UsageOverviewRealtimeRecord struct {
 	WindowStart       time.Time
 	WindowEnd         time.Time
 	TokenVelocity     []RealtimeTokenVelocityPointRecord
+	ModelSpeed        RealtimeModelSpeedRecord
 	LatencyScatter    RealtimeLatencyScatterRecord
 	CurrentUsage      RealtimeCurrentUsageRecord
 	RequestLevel      []RealtimeRequestLevelPointRecord
@@ -127,7 +152,7 @@ type UsageOverviewRecord struct {
 	Series            UsageOverviewSeriesRecord
 }
 
-// UsageComparisonItemRecord 与顶部 Overview 共用请求、Token 和动态计费口径。
+// UsageComparisonItemRecord 汇总同一模型、Key 或身份的请求、Token 与已存费用。
 type UsageComparisonItemRecord struct {
 	DualCosts pricing.DualCosts
 	// Bucket 是当前累加行的时间桶，TokenBuckets 保存该分类的时间序列。
@@ -156,6 +181,7 @@ type UsageOverviewComparisonsRecord struct {
 	Models            map[string]*UsageComparisonItemRecord
 	APIKeys           map[string]*UsageComparisonItemRecord
 	AuthFiles         map[string]*UsageComparisonItemRecord
+	Credentials       map[string]*UsageComparisonItemRecord
 	AIProviders       map[string]*UsageComparisonItemRecord
 }
 

@@ -24,6 +24,7 @@ import (
 // Implement every optional legacy provider, so a misrouted request cannot hide
 // behind an unconfigured provider or bypass the no-service-call assertion.
 type removedPricingSpy struct {
+	service.PricingProvider
 	calls []string
 	err   error
 }

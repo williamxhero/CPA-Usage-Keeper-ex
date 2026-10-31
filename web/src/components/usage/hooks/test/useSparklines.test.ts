@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildUsageSparklineSeries } from '../useSparklines';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { buildUsageSparklineSeries, useSparklines } from '../useSparklines';
 import type { UsageOverviewPayload } from '../useUsageData';
 
 const usageWithBackendSeries: UsageOverviewPayload = {
@@ -86,4 +88,12 @@ describe('buildUsageSparklineSeries', () => {
     expect(series.cost).toEqual([0]);
     expect(series.cacheReadRate).toEqual([0]);
   });
+});
+
+it('keeps the last successful sparkline while a refresh is pending', () => {
+  function Probe() {
+    const { tokensSparkline } = useSparklines({ usage: usageWithBackendSeries, loading: true });
+    return createElement('output', null, JSON.stringify(tokensSparkline?.data.datasets[0].data));
+  }
+  expect(renderToStaticMarkup(createElement(Probe))).toContain('[200,800]');
 });

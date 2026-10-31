@@ -8,9 +8,9 @@ import (
 
 // CodexQuotaEfficiencyQuery 描述一次只读的账号主额度效率回溯，不会把统计结果写回历史表。
 type CodexQuotaEfficiencyQuery struct {
-	// Provider 来自当前 Auth File 的真实 type；旧内部调用缺失时仍按 Codex 处理。
+	// Provider 来自当前 Credential 的真实 type；旧内部调用缺失时仍按 Codex 处理。
 	Provider string
-	// AuthIndex 是 Auth File 与 usage_events 之间唯一允许的账号关联键。
+	// AuthIndex 是 Credential 与 usage_events 之间唯一允许的账号关联键。
 	AuthIndex string
 	// Now 固定本次响应的“当前时间”，避免多条查询跨秒后对当前周期产生不同判断。
 	Now time.Time
@@ -114,7 +114,7 @@ type CodexQuotaEfficiencyUsage struct {
 	SuccessfulRequests int64
 	// FailedRequests 是 Failed=true 的请求数量。
 	FailedRequests int64
-	// InputTokens 保留输入 Token 汇总，供当前 pricing snapshot 计算成本。
+	// InputTokens 保留输入 Token 原值汇总，供周期用量展示。
 	InputTokens int64
 	// OutputTokens 保留输出 Token 汇总。
 	OutputTokens int64
@@ -126,9 +126,9 @@ type CodexQuotaEfficiencyUsage struct {
 	CacheCreationTokens int64
 	// TotalTokens 是页面展示和每百分点效率计算使用的总 Token。
 	TotalTokens int64
-	// TotalCostUSD 是按本次响应固定的当前 pricing snapshot 动态回算值。
+	// TotalCostUSD 是事件已存美元费用在该周期或区间的总和。
 	TotalCostUSD float64
-	// CostAvailable 只有所有需要计价的分组都成功匹配价格时才为 true。
+	// CostAvailable 只有范围内每条事件的已存费用都标记可用时才为 true。
 	CostAvailable bool
 	// DualCosts keeps legacy configured grouping and exact per-event reference costs independent.
 	DualCosts pricing.DualCosts

@@ -36,9 +36,9 @@ func openAICompatibilitySource() source {
 			for _, entry := range provider.APIKeyEntries {
 				// lookupKey 只来自当前 entry 的 API Key。
 				lookupKey := strings.TrimSpace(entry.APIKey)
-				// authIndex 只来自当前 entry 的 auth-index。
+				// authIndex 只来自当前 entry 的 auth_index。
 				authIndex := strings.TrimSpace(entry.AuthIndex)
-				// OpenAI entry 缺 API Key 或 auth-index 时只过滤该 entry。
+				// OpenAI entry 缺 API Key 或 auth_index 时只过滤该 entry。
 				if lookupKey == "" || authIndex == "" || displayName == "" {
 					continue
 				}

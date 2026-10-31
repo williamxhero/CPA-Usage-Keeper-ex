@@ -41,6 +41,56 @@ describe('Modal', () => {
     await act(async () => root.render(children))
   }
 
+  it('preserves a field focused before the deferred opening focus runs', async () => {
+    await render(<Modal open onClose={vi.fn()}><input aria-label="Invalid price" /></Modal>)
+    const input = document.body.querySelector<HTMLInputElement>('input')!
+    // 固定先校验聚焦、后执行打开定时器，复现 CI 中被关闭按钮抢焦点的顺序。
+    input.focus()
+    await act(async () => { vi.runOnlyPendingTimers() })
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('sets initial focus and restores the trigger after closing', async () => {
+    const content = (open: boolean) => <>
+      <button data-modal-trigger>Open</button>
+      <Modal open={open} onClose={vi.fn()}>Content</Modal>
+    </>
+    await render(content(false))
+    const trigger = document.body.querySelector<HTMLButtonElement>('[data-modal-trigger]')!
+    trigger.focus()
+    await render(content(true))
+    await act(async () => { vi.runOnlyPendingTimers() })
+    expect(document.activeElement).toBe(document.body.querySelector('.modal-close-floating'))
+
+    await render(content(false))
+    await act(async () => { vi.runAllTimers() })
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('preserves nested field focus and restores its parent trigger on close', async () => {
+    const content = (nestedOpen: boolean) => (
+      <Modal open title="Parent" onClose={vi.fn()}>
+        <button data-nested-trigger>Open nested</button>
+        <Modal open={nestedOpen} title="Nested" onClose={vi.fn()}>
+          <input aria-label="Nested price" />
+        </Modal>
+      </Modal>
+    )
+    await render(content(false))
+    await act(async () => { vi.runOnlyPendingTimers() })
+    const trigger = document.body.querySelector<HTMLButtonElement>('[data-nested-trigger]')!
+    trigger.focus()
+    await render(content(true))
+    const input = document.body.querySelector<HTMLInputElement>('input')!
+    input.focus()
+    await act(async () => { vi.runOnlyPendingTimers() })
+    expect(document.activeElement).toBe(input)
+
+    await render(content(false))
+    await act(async () => { vi.runAllTimers() })
+    expect(document.activeElement).toBe(trigger)
+  })
+
   it('renders a right-aligned full-height drawer while preserving dialog semantics', async () => {
     await render(
       <Modal open title="Credential" variant="drawer" width={840} onClose={() => undefined}>

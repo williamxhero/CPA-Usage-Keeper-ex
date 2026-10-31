@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
@@ -82,11 +83,11 @@ func TestFetchNormalizesEightSourcesInRegistryOrder(t *testing.T) {
 	disabled := false
 	note := "primary codex"
 	fetcher := successfulProviderFetcher()
-	// Codex 同时放入精确 auth-index 重复项和缺 auth-index 无效项。
+	// Codex 同时放入精确 auth-index 重复项和空 Key 过滤项。
 	fetcher.codexResult.Payload = []providerconfig.ProviderKeyConfig{
 		{APIKey: "codex-key", Prefix: "codex-prefix", Name: "Codex Team", BaseURL: "https://codex.example/v1", AuthIndex: "codex-auth", Priority: &priority, Disabled: &disabled, Note: &note},
 		{APIKey: "codex-duplicate", Prefix: "duplicate-prefix", Name: "Duplicate", BaseURL: "https://duplicate.example/v1", AuthIndex: "codex-auth"},
-		{APIKey: "codex-invalid", Name: "Invalid"},
+		{APIKey: " \t", Name: "Invalid"},
 	}
 	fetcher.xaiResult.Payload = []providerconfig.ProviderKeyConfig{{APIKey: "xai-key", Prefix: "xai-prefix", BaseURL: "https://api.x.ai/v1", AuthIndex: "xai-auth"}}
 	fetcher.geminiResult.Payload = []providerconfig.ProviderKeyConfig{{APIKey: "gemini-key", Prefix: "gemini-prefix", BaseURL: "https://gemini.example/v1", AuthIndex: "gemini-auth"}}
@@ -126,7 +127,7 @@ func TestFetchPropagatesOpenAIProviderFieldsToEveryValidEntry(t *testing.T) {
 	note := "shared provider"
 	fetcher := successfulProviderFetcher()
 	// OpenAI provider 故意缺 name，两个有效 entry 应共同使用默认名 openai。
-	fetcher.openAIResult.Payload = []providerconfig.OpenAICompatibilityConfig{{Prefix: "shared-prefix", BaseURL: "https://shared.example/v1", Priority: &priority, Disabled: &disabled, Note: &note, APIKeyEntries: []providerconfig.OpenAIApiKeyEntry{{APIKey: "first-key", AuthIndex: "first-auth"}, {APIKey: "second-key", AuthIndex: "second-auth"}, {APIKey: "missing-auth"}}}}
+	fetcher.openAIResult.Payload = []providerconfig.OpenAICompatibilityConfig{{Prefix: "shared-prefix", BaseURL: "https://shared.example/v1", Priority: &priority, Disabled: &disabled, Note: &note, APIKeyEntries: []providerconfig.OpenAIApiKeyEntry{{APIKey: "first-key", AuthIndex: "first-auth"}, {APIKey: "second-key", AuthIndex: "second-auth"}, {APIKey: " \t"}}}}
 
 	snapshot, err := providermetadata.Fetch(context.Background(), fetcher)
 	if err != nil {
@@ -149,25 +150,106 @@ func TestFetchPropagatesOpenAIProviderFieldsToEveryValidEntry(t *testing.T) {
 	}
 }
 
-func TestFetchClassifiesOptionalFailuresAndSuccessfulEmptySources(t *testing.T) {
-	t.Run("optional typed 404", func(t *testing.T) {
+func TestFetchFiltersIncompleteOpenAIEntries(t *testing.T) {
+	for _, state := range []struct {
+		name     string
+		disabled bool
+	}{
+		{name: "enabled", disabled: false},
+		{name: "disabled", disabled: true},
+	} {
+		for _, mixed := range []bool{true, false} {
+			name := "all skipped"
+			if mixed {
+				name = "mixed"
+			}
+			t.Run(state.name+"/"+name, func(t *testing.T) {
+				entries := []providerconfig.OpenAIApiKeyEntry{
+					{APIKey: "missing-auth-key"},
+					{APIKey: "blank-auth-key", AuthIndex: " \t"},
+					{AuthIndex: "empty-key-auth"},
+					{APIKey: " \t", AuthIndex: "blank-key-auth"},
+				}
+				var want []providermetadata.Credential
+				if mixed {
+					// 有效成员位于无效成员两侧，不能被缺标识的成员中断。
+					entries = append([]providerconfig.OpenAIApiKeyEntry{{APIKey: " first-key ", AuthIndex: " first-auth "}}, entries...)
+					entries = append(entries, providerconfig.OpenAIApiKeyEntry{APIKey: "second-key", AuthIndex: "second-auth"})
+					want = []providermetadata.Credential{
+						{LookupKey: "first-key", AuthIndex: "first-auth", ProviderType: "openai", DisplayName: "OpenAI Team", Disabled: &state.disabled},
+						{LookupKey: "second-key", AuthIndex: "second-auth", ProviderType: "openai", DisplayName: "OpenAI Team", Disabled: &state.disabled},
+					}
+				}
+				fetcher := successfulProviderFetcher()
+				fetcher.openAIResult.Payload = []providerconfig.OpenAICompatibilityConfig{{Name: "OpenAI Team", Disabled: &state.disabled, APIKeyEntries: entries}}
+
+				snapshot, err := providermetadata.Fetch(context.Background(), fetcher)
+				if err != nil {
+					t.Fatalf("Fetch returned error: %v", err)
+				}
+				if !reflect.DeepEqual(snapshot.FetchedProviderTypes, registrySourceOrder) {
+					t.Fatalf("FetchedProviderTypes = %#v, want %#v", snapshot.FetchedProviderTypes, registrySourceOrder)
+				}
+				if !reflect.DeepEqual(snapshot.Credentials, want) {
+					t.Fatalf("Credentials = %#v, want %#v", snapshot.Credentials, want)
+				}
+			})
+		}
+	}
+}
+
+func TestFetchRejectsWholeSourceWhenNonEmptyKeyHasNoAuthIndex(t *testing.T) {
+	for _, source := range registrySourceOrder {
+		if source == "openai" {
+			continue
+		}
+		for _, authIndex := range []string{"", " \t"} {
+			name := "missing"
+			if authIndex != "" {
+				name = "blank"
+			}
+			t.Run(source+"/"+name, func(t *testing.T) {
+				fetcher := successfulProviderFetcher()
+				standardResults := map[string]*response.ProviderKeyConfigResult{
+					"codex": fetcher.codexResult, "xai": fetcher.xaiResult, "gemini": fetcher.geminiResult,
+					"gemini-interactions": fetcher.interactionsResult, "claude": fetcher.claudeResult,
+					"vertex": fetcher.vertexResult, "meta": fetcher.metaResult,
+				}
+				// 合法条目先出现，随后缺标识的条目必须让整个来源失败，不能返回部分凭证。
+				standardResults[source].Payload = []providerconfig.ProviderKeyConfig{
+					{APIKey: "valid-key", AuthIndex: "valid-auth"},
+					{APIKey: " do-not-expose-api-key ", AuthIndex: authIndex},
+				}
+				snapshot, err := providermetadata.Fetch(context.Background(), fetcher)
+				if err == nil || !strings.Contains(err.Error(), "auth_index") || strings.Contains(err.Error(), "do-not-expose-api-key") {
+					t.Errorf("warning = %v", err)
+				}
+				if slices.Contains(snapshot.FetchedProviderTypes, source) || len(snapshot.FetchedProviderTypes) != 7 || len(snapshot.Credentials) != 0 {
+					t.Errorf("source %s fetched = %v, fetched count = %d, credentials = %d", source, slices.Contains(snapshot.FetchedProviderTypes, source), len(snapshot.FetchedProviderTypes), len(snapshot.Credentials))
+				}
+			})
+		}
+	}
+}
+
+func TestFetchClassifiesFailuresAndSuccessfulEmptySources(t *testing.T) {
+	t.Run("404 failures remain independent", func(t *testing.T) {
 		fetcher := successfulProviderFetcher()
 		fetcher.xaiResult = &response.ProviderKeyConfigResult{StatusCode: http.StatusNotFound}
 		fetcher.xaiErr = errors.New("xai endpoint unavailable")
 		fetcher.interactionsResult = &response.ProviderKeyConfigResult{StatusCode: http.StatusNotFound}
 		fetcher.interactionsErr = errors.New("interactions endpoint unavailable")
-
 		snapshot, err := providermetadata.Fetch(context.Background(), fetcher)
-		if err != nil {
-			t.Fatalf("Fetch returned error: %v", err)
+		if err == nil {
+			t.Fatal("failed sources returned no warning")
 		}
 		wantTypes := []string{"codex", "gemini", "claude", "vertex", "meta", "openai"}
 		if !reflect.DeepEqual(snapshot.FetchedProviderTypes, wantTypes) {
-			t.Fatalf("FetchedProviderTypes = %#v, want %#v", snapshot.FetchedProviderTypes, wantTypes)
+			t.Fatalf("FetchedProviderTypes = %#v", snapshot.FetchedProviderTypes)
 		}
 	})
 
-	// 只有 typed result 的 404 才能按 optional 处理，不能解析 error 文本。
+	// 请求错误文本不能被当成成功空来源。
 	t.Run("nil result containing 404 text", func(t *testing.T) {
 		fetcher := successfulProviderFetcher()
 		fetcher.xaiResult = nil
@@ -200,10 +282,10 @@ func TestFetchClassifiesOptionalFailuresAndSuccessfulEmptySources(t *testing.T) 
 		}
 	})
 
-	t.Run("successful empty and invalid entries", func(t *testing.T) {
+	t.Run("successful empty and blank keys", func(t *testing.T) {
 		fetcher := successfulProviderFetcher()
-		fetcher.geminiResult.Payload = []providerconfig.ProviderKeyConfig{{APIKey: "missing-auth"}, {AuthIndex: "missing-key"}}
-		fetcher.metaResult.Payload = []providerconfig.ProviderKeyConfig{{APIKey: "meta-missing-auth"}, {AuthIndex: "meta-missing-key"}}
+		fetcher.geminiResult.Payload = []providerconfig.ProviderKeyConfig{{APIKey: " \t"}, {AuthIndex: "missing-key"}}
+		fetcher.metaResult.Payload = []providerconfig.ProviderKeyConfig{{APIKey: " \t"}, {AuthIndex: "meta-missing-key"}}
 
 		snapshot, err := providermetadata.Fetch(context.Background(), fetcher)
 		if err != nil {

@@ -11,12 +11,13 @@ import (
 
 var isolatedConfigEnvKeys = []string{
 	"APP_HOST", "APP_PORT", "APP_BASE_PATH", "CPA_PUBLIC_URL", "WORK_DIR", "CPA_BASE_URL", "CPA_MANAGEMENT_KEY",
-	"CPA_REQUEST_LOG_ACCESS_ENABLED", "API_KEY_VIEWER_LOCAL_RANKING_ENABLED",
+	"CPA_REQUEST_LOG_ACCESS_ENABLED",
 	"REDIS_QUEUE_ADDR", "REDIS_QUEUE_TLS", "REDIS_QUEUE_BATCH_SIZE", "REDIS_QUEUE_IDLE_INTERVAL",
 	"BACKUP_ENABLED", "BACKUP_INTERVAL", "BACKUP_RETENTION_DAYS",
 	"REQUEST_TIMEOUT", "LOG_LEVEL", "LOG_FILE_ENABLED", "LOG_DIR", "LOG_RETENTION_DAYS",
 	"AUTH_ENABLED", "LOGIN_PASSWORD", "AUTH_SESSION_TTL", "TRUSTED_PROXY_CIDRS", "TZ", "TLS_ENABLED", "TLS_CERT_FILE", "TLS_KEY_FILE",
 	"TLS_SKIP_VERIFY", "QUOTA_REFRESH_WORKER_LIMIT", "QUOTA_UPSTREAM_RESPONSES_ENABLED",
+	"AUTH_OIDC_ENABLED", "AUTH_OIDC_PROMPT_LOGIN", "AUTH_OIDC_ISSUER", "AUTH_OIDC_CLIENT_ID", "AUTH_OIDC_CLIENT_SECRET", "AUTH_OIDC_REDIRECT_URL", "AUTH_OIDC_ALLOWED_SUBJECTS", "AUTH_OIDC_ALLOWED_USERS",
 }
 
 func TestLoadOptionalAccessFlags(t *testing.T) {
@@ -26,7 +27,6 @@ func TestLoadOptionalAccessFlags(t *testing.T) {
 	}{
 		{"CPA_REQUEST_LOG_ACCESS_ENABLED", func(cfg *config.Config) bool { return cfg.CPARequestLogAccessEnabled }},
 		{"QUOTA_UPSTREAM_RESPONSES_ENABLED", func(cfg *config.Config) bool { return cfg.QuotaUpstreamResponsesEnabled }},
-		{"API_KEY_VIEWER_LOCAL_RANKING_ENABLED", func(cfg *config.Config) bool { return cfg.APIKeyViewerLocalRankingEnabled }},
 	} {
 		for _, enabled := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/%t", tc.key, enabled), func(t *testing.T) {

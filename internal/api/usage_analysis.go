@@ -15,20 +15,22 @@ import (
 )
 
 type analysisResponse struct {
-	PricingSnapshotID     string                    `json:"pricing_snapshot_id"`
-	Granularity           string                    `json:"granularity"`
-	Timezone              string                    `json:"timezone"`
-	RangeStart            *time.Time                `json:"range_start,omitempty"`
-	RangeEnd              *time.Time                `json:"range_end,omitempty"`
-	TokenUsage            []analysisTokenUsage      `json:"token_usage"`
-	ModelUsage            analysisModelUsage        `json:"model_usage"`
-	APIKeyComposition     []analysisCompositionItem `json:"api_key_composition"`
-	ModelComposition      []analysisCompositionItem `json:"model_composition"`
-	AuthFilesComposition  []analysisCompositionItem `json:"auth_files_composition"`
-	AIProviderComposition []analysisCompositionItem `json:"ai_provider_composition"`
-	Heatmap               analysisHeatmap           `json:"heatmap"`
-	CostBreakdown         analysisCostBreakdown     `json:"cost_breakdown"`
-	ModelEfficiency       []analysisModelEfficiency `json:"model_efficiency"`
+	PricingSnapshotID      string                    `json:"pricing_snapshot_id"`
+	Granularity            string                    `json:"granularity"`
+	Timezone               string                    `json:"timezone"`
+	RangeStart             *time.Time                `json:"range_start,omitempty"`
+	RangeEnd               *time.Time                `json:"range_end,omitempty"`
+	TokenUsage             []analysisTokenUsage      `json:"token_usage"`
+	ModelUsage             analysisModelUsage        `json:"model_usage"`
+	ModelSpeed             analysisModelSpeed        `json:"model_speed"`
+	APIKeyComposition      []analysisCompositionItem `json:"api_key_composition"`
+	ModelComposition       []analysisCompositionItem `json:"model_composition"`
+	CredentialsComposition []analysisCompositionItem `json:"credentials_composition"`
+	AuthFilesComposition   []analysisCompositionItem `json:"auth_files_composition"`
+	AIProviderComposition  []analysisCompositionItem `json:"ai_provider_composition"`
+	Heatmap                analysisHeatmap           `json:"heatmap"`
+	CostBreakdown          analysisCostBreakdown     `json:"cost_breakdown"`
+	ModelEfficiency        []analysisModelEfficiency `json:"model_efficiency"`
 }
 
 type analysisTokenUsage struct {
@@ -54,6 +56,31 @@ type analysisModelUsageSeries struct {
 	Model       string  `json:"model"`
 	TotalTokens []int64 `json:"total_tokens"`
 	Requests    []int64 `json:"requests"`
+}
+
+type analysisModelSpeed struct {
+	RangeStart *time.Time                 `json:"range_start,omitempty"`
+	RangeEnd   *time.Time                 `json:"range_end,omitempty"`
+	Buckets    []analysisModelSpeedBucket `json:"buckets"`
+	Series     []analysisModelSpeedSeries `json:"series"`
+}
+
+type analysisModelSpeedBucket struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+type analysisModelSpeedSample struct {
+	SpeedTPSSum      float64  `json:"speed_tps_sum"`
+	SpeedSampleCount int64    `json:"speed_sample_count"`
+	MeanTPS          *float64 `json:"mean_tps"`
+}
+
+type analysisModelSpeedSeries struct {
+	Model            string                     `json:"model"`
+	TotalTokens      int64                      `json:"total_tokens"`
+	SpeedSampleCount int64                      `json:"speed_sample_count"`
+	Samples          []analysisModelSpeedSample `json:"samples"`
 }
 
 type analysisCompositionItem struct {
@@ -237,6 +264,7 @@ func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.Usa
 		}
 		payload := buildAnalysisPayload(analysis, apiKeyInfos)
 		// 来源身份属于管理员视图；Viewer JSON 在服务端直接清空，避免仅靠 UI 隐藏。
+		payload.CredentialsComposition = []analysisCompositionItem{}
 		payload.AuthFilesComposition = []analysisCompositionItem{}
 		payload.AIProviderComposition = []analysisCompositionItem{}
 		c.JSON(http.StatusOK, payload)
@@ -271,19 +299,22 @@ func registerKeyUsageAnalysisRoute(router gin.IRoutes, usageProvider service.Usa
 	})
 }
 
+// emptyAnalysisResponse 保持无数据时总费用为零且可用，返回稳定的图表空数组。
 func emptyAnalysisResponse() analysisResponse {
 	return analysisResponse{
-		Granularity:           string(servicedto.AnalysisGranularityHourly),
-		Timezone:              time.Local.String(),
-		TokenUsage:            []analysisTokenUsage{},
-		ModelUsage:            analysisModelUsage{Buckets: []time.Time{}, Series: []analysisModelUsageSeries{}},
-		APIKeyComposition:     []analysisCompositionItem{},
-		ModelComposition:      []analysisCompositionItem{},
-		AuthFilesComposition:  []analysisCompositionItem{},
-		AIProviderComposition: []analysisCompositionItem{},
-		Heatmap:               buildAnalysisHeatmapPayload(nil, nil),
-		CostBreakdown:         analysisCostBreakdown{CostAvailable: true, DualCosts: (pricing.DualCosts{}).Normalized()},
-		ModelEfficiency:       []analysisModelEfficiency{},
+		Granularity:            string(servicedto.AnalysisGranularityHourly),
+		Timezone:               time.Local.String(),
+		TokenUsage:             []analysisTokenUsage{},
+		ModelUsage:             analysisModelUsage{Buckets: []time.Time{}, Series: []analysisModelUsageSeries{}},
+		ModelSpeed:             buildAnalysisModelSpeedPayload(servicedto.AnalysisModelSpeed{}),
+		APIKeyComposition:      []analysisCompositionItem{},
+		ModelComposition:       []analysisCompositionItem{},
+		CredentialsComposition: []analysisCompositionItem{},
+		AuthFilesComposition:   []analysisCompositionItem{},
+		AIProviderComposition:  []analysisCompositionItem{},
+		Heatmap:                buildAnalysisHeatmapPayload(nil, nil),
+		CostBreakdown:          analysisCostBreakdown{CostAvailable: true, DualCosts: (pricing.DualCosts{}).Normalized()},
+		ModelEfficiency:        []analysisModelEfficiency{},
 	}
 }
 
@@ -310,6 +341,7 @@ func loadCPAAPIKeyInfos(c *gin.Context, provider service.CPAAPIKeyProvider) (map
 	return infos, nil
 }
 
+// buildAnalysisPayload 透传已存总费用与可用性，保留原 Token、身份和 Key 脱敏响应合同。
 func buildAnalysisPayload(snapshot *servicedto.AnalysisSnapshot, apiKeyInfos map[string]analysisAPIKeyInfo) analysisResponse {
 	if snapshot == nil {
 		return emptyAnalysisResponse()
@@ -332,21 +364,27 @@ func buildAnalysisPayload(snapshot *servicedto.AnalysisSnapshot, apiKeyInfos map
 	}
 	apiComposition := buildAnalysisCompositionPayload(snapshot.APIKeyComposition, apiKeyInfos)
 	modelComposition := buildAnalysisCompositionPayload(snapshot.ModelComposition, nil)
-	authFilesComposition := buildAnalysisCompositionPayload(snapshot.AuthFilesComposition, nil)
+	credentials := snapshot.CredentialsComposition
+	if credentials == nil {
+		credentials = snapshot.AuthFilesComposition
+	}
+	credentialsComposition := buildAnalysisCompositionPayload(credentials, nil)
 	aiProviderComposition := buildAnalysisCompositionPayload(snapshot.AIProviderComposition, nil)
 	return analysisResponse{
-		PricingSnapshotID:     snapshot.PricingSnapshotID,
-		Granularity:           string(snapshot.Granularity),
-		Timezone:              time.Local.String(),
-		RangeStart:            snapshot.RangeStart,
-		RangeEnd:              snapshot.RangeEnd,
-		TokenUsage:            tokenUsage,
-		ModelUsage:            buildAnalysisModelUsagePayload(snapshot.TokenUsage, snapshot.ModelUsage),
-		APIKeyComposition:     apiComposition,
-		ModelComposition:      modelComposition,
-		AuthFilesComposition:  authFilesComposition,
-		AIProviderComposition: aiProviderComposition,
-		Heatmap:               buildAnalysisHeatmapPayload(snapshot.Heatmap, apiKeyInfos),
+		PricingSnapshotID:      snapshot.PricingSnapshotID,
+		Granularity:            string(snapshot.Granularity),
+		Timezone:               time.Local.String(),
+		RangeStart:             snapshot.RangeStart,
+		RangeEnd:               snapshot.RangeEnd,
+		TokenUsage:             tokenUsage,
+		ModelUsage:             buildAnalysisModelUsagePayload(snapshot.TokenUsage, snapshot.ModelUsage),
+		ModelSpeed:             buildAnalysisModelSpeedPayload(snapshot.ModelSpeed),
+		APIKeyComposition:      apiComposition,
+		ModelComposition:       modelComposition,
+		CredentialsComposition: credentialsComposition,
+		AuthFilesComposition:   credentialsComposition,
+		AIProviderComposition:  aiProviderComposition,
+		Heatmap:                buildAnalysisHeatmapPayload(snapshot.Heatmap, apiKeyInfos),
 		CostBreakdown: analysisCostBreakdown{
 			DualCosts:            snapshot.CostBreakdown.DualCosts.Normalized(),
 			UncachedInputCostUSD: snapshot.CostBreakdown.UncachedInputCostUSD,
@@ -580,4 +618,19 @@ func sortedHeatmapKeysByRequests(requestsByKey map[string]int64) []string {
 		return requestsByKey[keys[i]] > requestsByKey[keys[j]]
 	})
 	return keys
+}
+
+func buildAnalysisModelSpeedPayload(speed servicedto.AnalysisModelSpeed) analysisModelSpeed {
+	result := analysisModelSpeed{RangeStart: speed.RangeStart, RangeEnd: speed.RangeEnd, Buckets: make([]analysisModelSpeedBucket, 0, len(speed.Buckets)), Series: make([]analysisModelSpeedSeries, 0, len(speed.Series))}
+	for _, bucket := range speed.Buckets {
+		result.Buckets = append(result.Buckets, analysisModelSpeedBucket{Start: bucket.Start, End: bucket.End})
+	}
+	for _, series := range speed.Series {
+		samples := make([]analysisModelSpeedSample, 0, len(series.Samples))
+		for _, sample := range series.Samples {
+			samples = append(samples, analysisModelSpeedSample{SpeedTPSSum: sample.SpeedTPSSum, SpeedSampleCount: sample.SpeedSampleCount, MeanTPS: sample.MeanTPS})
+		}
+		result.Series = append(result.Series, analysisModelSpeedSeries{Model: series.Model, TotalTokens: series.TotalTokens, SpeedSampleCount: series.SpeedSampleCount, Samples: samples})
+	}
+	return result
 }

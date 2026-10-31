@@ -13,7 +13,9 @@ import (
 )
 
 type ResetRequest struct {
-	AuthIndex string `json:"auth_index"`
+	AuthIndex      string `json:"auth_index"`
+	GrantID        string `json:"grant_id,omitempty"`
+	OrganizationID string `json:"organization_id,omitempty"`
 }
 
 type ResetResponse struct {
@@ -41,7 +43,7 @@ func (s *Service) GetResetCredits(ctx context.Context, request ResetCreditsReque
 	if authIndex == "" {
 		return ResetCreditsResponse{}, fmt.Errorf("%w: auth_index is required", ErrValidation)
 	}
-	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(ctx, s.db, authIndex)
+	identity, err := repository.GetActiveCredentialUsageIdentityByAuthIndex(ctx, s.db, authIndex)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ResetCreditsResponse{}, fmt.Errorf("%w: %s", ErrNotFound, authIndex)
@@ -81,8 +83,8 @@ func (s *Service) Reset(ctx context.Context, request ResetRequest) (ResetRespons
 		return ResetResponse{}, fmt.Errorf("%w: %s", ErrResetInProgress, authIndex)
 	}
 	defer s.finishReset(authIndex)
-	// reset 会消费官方次数，只要求命中当前未删除的 Auth File；disabled 仅限制自动刷新，不限制用户手动 reset。
-	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(ctx, s.db, authIndex)
+	// reset 会消费官方次数，只要求命中当前未删除的 Credential；disabled 仅限制自动刷新，不限制用户手动 reset。
+	identity, err := repository.GetActiveCredentialUsageIdentityByAuthIndex(ctx, s.db, authIndex)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ResetResponse{}, fmt.Errorf("%w: %s", ErrNotFound, authIndex)
@@ -90,10 +92,25 @@ func (s *Service) Reset(ctx context.Context, request ResetRequest) (ResetRespons
 		return ResetResponse{}, err
 	}
 	resolvedType, handler, ok := s.resolveQuotaHandlerForIdentity(identity)
+	// Claude 弹窗所选 grant 不能在账号类型改变后误走 Codex 消费。
+	if (request.GrantID != "" || request.OrganizationID != "") && (!ok || resolvedType != "claude") {
+		return ResetResponse{AuthIndex: authIndex, Code: "unavailable"}, nil
+	}
+	if ok && resolvedType == "claude" {
+		resetter, supported := handler.(ClaudeResetProvider)
+		if !supported {
+			return ResetResponse{}, ErrUnsupportedType
+		}
+		output, err := resetter.ResetClaude(ctx, ProviderInput{Identity: identity}, request.GrantID, request.OrganizationID)
+		if err != nil {
+			return ResetResponse{}, err
+		}
+		return ResetResponse{AuthIndex: authIndex, Code: output.Code, RecoveryFailed: output.RecoveryFailed}, nil
+	}
 	if !ok || resolvedType != "codex" {
 		return ResetResponse{}, fmt.Errorf("%w: %s", ErrUnsupportedType, normalizeIdentityType(identity.Provider))
 	}
-	// 当前只有 Codex 官方接口暴露 reset credit 消费能力，其它 provider 继续走只读刷新链路。
+	// Codex 沿用现有 reset credit 消费链路。
 	resetter, ok := handler.(ProviderResetter)
 	if !ok {
 		return ResetResponse{}, fmt.Errorf("%w: %s", ErrUnsupportedType, normalizeIdentityType(identity.Provider))

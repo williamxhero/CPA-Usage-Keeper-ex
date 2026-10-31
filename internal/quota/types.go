@@ -58,28 +58,37 @@ type SubscriptionInfo struct {
 	TierName string `json:"tierName,omitempty"`
 }
 
+// QuotaUsageBreakdown 表示共享额度的使用构成，不是独立限额。
+type QuotaUsageBreakdown struct {
+	Product     string   `json:"product"`
+	UsedPercent *float64 `json:"usedPercent,omitempty"`
+}
+
 type QuotaRow struct {
-	Key               string             `json:"key"`
-	Label             string             `json:"label,omitempty"`
-	Scope             string             `json:"scope,omitempty"`
-	Metric            string             `json:"metric,omitempty"`
-	GroupKey          string             `json:"groupKey,omitempty"`
-	GroupLabel        string             `json:"groupLabel,omitempty"`
-	GroupDescription  string             `json:"groupDescription,omitempty"`
-	Used              *float64           `json:"used,omitempty"`
-	Limit             *float64           `json:"limit,omitempty"`
-	Remaining         *float64           `json:"remaining,omitempty"`
-	UsedPercent       *float64           `json:"usedPercent,omitempty"`
-	RemainingFraction *float64           `json:"remainingFraction,omitempty"`
-	Allowed           *bool              `json:"allowed,omitempty"`
-	LimitReached      *bool              `json:"limitReached,omitempty"`
-	Window            *QuotaWindow       `json:"window,omitempty"`
-	ResetAt           string             `json:"resetAt,omitempty"`
-	ResetAfterSeconds *int64             `json:"resetAfterSeconds,omitempty"`
-	WindowUsageTokens *int64             `json:"window_usage_tokens,omitempty"`
-	WindowUsageCost   *float64           `json:"window_usage_cost,omitempty"`
-	DualCosts         *pricing.DualCosts `json:"dual_costs,omitempty"`
-	PricingSnapshotID string             `json:"pricing_snapshot_id,omitempty"`
+	UsageBreakdown      []QuotaUsageBreakdown `json:"usageBreakdown,omitempty"`
+	Key                 string                `json:"key"`
+	Label               string                `json:"label,omitempty"`
+	Scope               string                `json:"scope,omitempty"`
+	Metric              string                `json:"metric,omitempty"`
+	GroupKey            string                `json:"groupKey,omitempty"`
+	GroupLabel          string                `json:"groupLabel,omitempty"`
+	GroupDescription    string                `json:"groupDescription,omitempty"`
+	Used                *float64              `json:"used,omitempty"`
+	Limit               *float64              `json:"limit,omitempty"`
+	Remaining           *float64              `json:"remaining,omitempty"`
+	UsedPercent         *float64              `json:"usedPercent,omitempty"`
+	RemainingFraction   *float64              `json:"remainingFraction,omitempty"`
+	Allowed             *bool                 `json:"allowed,omitempty"`
+	LimitReached        *bool                 `json:"limitReached,omitempty"`
+	Window              *QuotaWindow          `json:"window,omitempty"`
+	ResetAt             string                `json:"resetAt,omitempty"`
+	ResetAfterSeconds   *int64                `json:"resetAfterSeconds,omitempty"`
+	WindowUsageTokens   *int64                `json:"window_usage_tokens,omitempty"`
+	WindowUsageCost     *float64              `json:"window_usage_cost,omitempty"`
+	DualCosts           *pricing.DualCosts    `json:"dual_costs,omitempty"`
+	PricingSnapshotID   string                `json:"pricing_snapshot_id,omitempty"`
+	WindowCostSource    string                `json:"window_cost_source,omitempty"`
+	StoredCostAvailable *bool                 `json:"stored_cost_available,omitempty"`
 }
 
 type AntigravityQuotaBucket struct {
@@ -204,14 +213,15 @@ type ClaudeExtraUsage struct {
 }
 
 type ClaudeUsagePayload struct {
-	FiveHour          *ClaudeUsageWindow `json:"fiveHour,omitempty"`
-	SevenDay          *ClaudeUsageWindow `json:"sevenDay,omitempty"`
-	SevenDayOAuthApps *ClaudeUsageWindow `json:"sevenDayOauthApps,omitempty"`
-	SevenDayOpus      *ClaudeUsageWindow `json:"sevenDayOpus,omitempty"`
-	SevenDaySonnet    *ClaudeUsageWindow `json:"sevenDaySonnet,omitempty"`
-	SevenDayCowork    *ClaudeUsageWindow `json:"sevenDayCowork,omitempty"`
-	IguanaNecktie     *ClaudeUsageWindow `json:"iguanaNecktie,omitempty"`
-	ExtraUsage        *ClaudeExtraUsage  `json:"extraUsage,omitempty"`
+	ResetGrants       *ClaudeResetGrantStatus `json:"resetGrants,omitempty"`
+	FiveHour          *ClaudeUsageWindow      `json:"fiveHour,omitempty"`
+	SevenDay          *ClaudeUsageWindow      `json:"sevenDay,omitempty"`
+	SevenDayOAuthApps *ClaudeUsageWindow      `json:"sevenDayOauthApps,omitempty"`
+	SevenDayOpus      *ClaudeUsageWindow      `json:"sevenDayOpus,omitempty"`
+	SevenDaySonnet    *ClaudeUsageWindow      `json:"sevenDaySonnet,omitempty"`
+	SevenDayCowork    *ClaudeUsageWindow      `json:"sevenDayCowork,omitempty"`
+	IguanaNecktie     *ClaudeUsageWindow      `json:"iguanaNecktie,omitempty"`
+	ExtraUsage        *ClaudeExtraUsage       `json:"extraUsage,omitempty"`
 }
 
 type ClaudeProfileAccount struct {

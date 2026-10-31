@@ -28,11 +28,15 @@ interface SelectProps {
   value: string;
   options: ReadonlyArray<SelectOption>;
   onChange: (value: string) => void;
+  onOpen?: () => void;
+  selectedOption?: SelectOption;
   placeholder?: string;
   className?: string;
   dropdownClassName?: string;
   disabled?: boolean;
   ariaLabel?: string;
+  ariaInvalid?: boolean;
+  dataAttributes?: Record<`data-${string}`, string | boolean>;
   ariaLabelledBy?: string;
   ariaDescribedBy?: string;
   fullWidth?: boolean;
@@ -116,11 +120,15 @@ export function Select({
   value,
   options,
   onChange,
+  onOpen,
+  selectedOption,
   placeholder,
   className,
   dropdownClassName,
   disabled = false,
   ariaLabel,
+  ariaInvalid,
+  dataAttributes,
   ariaLabelledBy,
   ariaDescribedBy,
   fullWidth = true,
@@ -143,6 +151,12 @@ export function Select({
   const dropdownRef = useRef<HTMLDivElement | null>(null);
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties | null>(null);
   const isOpen = open && !disabled;
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    const newlyOpened = isOpen && !wasOpenRef.current;
+    wasOpenRef.current = isOpen;
+    if (newlyOpened) onOpen?.();
+  }, [isOpen, onOpen]);
   const searchable = Boolean(search);
   const touch = useMediaQuery('(pointer: coarse)');
   const touchSearch = searchable && touch;
@@ -183,7 +197,7 @@ export function Select({
       : visibleSelectedIndex >= 0 && !visibleOptions[visibleSelectedIndex]?.disabled
         ? visibleSelectedIndex
         : firstEnabledIndex;
-  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : selectedOption?.value === value ? selectedOption : undefined;
   const displayText = selected?.triggerLabel ?? selected?.label ?? placeholder ?? '';
   const isPlaceholder = !selected && placeholder;
 
@@ -344,6 +358,8 @@ export function Select({
       className={`${styles.trigger} ${styles.searchInput} ${touchSearch ? styles.touchSearchInput : ''}`}
       type="text"
       role="combobox"
+      {...dataAttributes}
+      aria-invalid={ariaInvalid}
       aria-label={ariaLabel ?? search.placeholder}
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
@@ -423,6 +439,8 @@ export function Select({
               ? `${selectId}-option-${resolvedHighlightedIndex}`
               : undefined
           }
+          {...dataAttributes}
+          aria-invalid={ariaInvalid}
           aria-label={ariaLabel ?? search?.placeholder}
           aria-labelledby={ariaLabelledBy}
           aria-describedby={ariaDescribedBy}

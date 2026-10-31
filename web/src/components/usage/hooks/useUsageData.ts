@@ -17,7 +17,7 @@ export interface UseUsageDataReturn {
   loading: boolean;
   error: string;
   lastRefreshedAt: Date | null;
-  loadUsage: () => Promise<void>;
+  loadUsage: (onLoaded?: (response: UsageOverviewResponse) => void) => Promise<void>;
 }
 
 export interface UseUsageDataOptions {
@@ -47,10 +47,11 @@ export function useUsageData(options: UseUsageDataOptions = {}): UseUsageDataRet
     [customEnd, customStart, customUnit, range],
   );
 
-  const loadUsage = useCallback(async () => {
+  const loadUsage = useCallback(async (onLoaded?: (response: UsageOverviewResponse) => void) => {
     if (!rangeQuery.valid) return;
     try {
       await loadUsageStats({
+        onLoaded,
         force: true,
         staleTimeMs: USAGE_STATS_STALE_TIME_MS,
         range: rangeQuery.range,
@@ -75,6 +76,8 @@ export function useUsageData(options: UseUsageDataOptions = {}): UseUsageDataRet
       return;
     }
     void loadUsageStats({
+      // 进入页面或重新启用时读取服务端最新已存费用，不以本地60秒缓存代替刷新。
+      force: true,
       staleTimeMs: USAGE_STATS_STALE_TIME_MS,
       range: rangeQuery.range,
       unit: rangeQuery.unit,

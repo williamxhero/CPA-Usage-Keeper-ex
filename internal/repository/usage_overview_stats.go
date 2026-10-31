@@ -40,6 +40,45 @@ func AggregateUsageOverviewStats(ctx context.Context, db *gorm.DB, now time.Time
 	}
 }
 
+// AggregateStoredUsageOverviewStats is an explicit maintenance boundary for
+// replaying persisted event valuations into overview rollups. It never serves
+// ordinary ingestion: callers must coordinate exclusivity and accept that a
+// NULL, non-finite, or otherwise incomplete stored fee aborts the page without
+// advancing the overview checkpoint.
+func AggregateStoredUsageOverviewStats(ctx context.Context, db *gorm.DB, now time.Time) error {
+	if db == nil {
+		return fmt.Errorf("database is nil")
+	}
+	normalizedNow := timeutil.NormalizeStorageTime(now)
+	targetEventID, err := LoadUsageAggregationTargetEventID(ctx, db)
+	if err != nil {
+		return err
+	}
+	for {
+		snapshot, err := LoadUsageAggregationCheckpointSnapshot(ctx, db)
+		if err != nil {
+			return err
+		}
+		if snapshot.OverviewCursor >= targetEventID {
+			return nil
+		}
+		events, err := LoadUsageAggregationEventPage(ctx, db, snapshot.OverviewCursor, targetEventID, usageOverviewAggregationBatchSize)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			return fmt.Errorf("stored overview page is empty before target %d from cursor %d", targetEventID, snapshot.OverviewCursor)
+		}
+		hourlyRows, dailyRows, nextCursor, err := overview.BuildStoredRows(events)
+		if err != nil {
+			return err
+		}
+		if err := ApplyStoredUsageOverviewAggregationPage(ctx, db, snapshot.OverviewCursor, nextCursor, hourlyRows, dailyRows, normalizedNow); err != nil {
+			return err
+		}
+	}
+}
+
 // AggregateUsageOverviewStatsBatch 执行一次 Reader 事件页和一次独立 Overview 写事务。
 func AggregateUsageOverviewStatsBatch(ctx context.Context, db *gorm.DB, now time.Time) (int, error) {
 	if db == nil {
@@ -95,7 +134,10 @@ func aggregateUsageOverviewStatsBatch(ctx context.Context, db *gorm.DB, now time
 	}
 
 	// Overview 纯计算仍由原 BuildRows 唯一负责，输入事件页不被修改。
-	hourlyRows, dailyRows, maxEventID := overview.BuildRows(events)
+	hourlyRows, dailyRows, maxEventID, buildErr := overview.BuildOrdinaryRows(events)
+	if buildErr != nil {
+		return 0, buildErr
+	}
 	if err := ApplyUsageOverviewAggregationPage(ctx, db, snapshot.OverviewCursor, maxEventID, hourlyRows, dailyRows, now); err != nil {
 		return 0, err
 	}
@@ -104,13 +146,23 @@ func aggregateUsageOverviewStatsBatch(ctx context.Context, db *gorm.DB, now time
 
 // ApplyUsageOverviewAggregationPage 在独立短事务内写两种 rows 并条件推进 Overview 水位。
 func ApplyUsageOverviewAggregationPage(ctx context.Context, db *gorm.DB, expectedCursor, nextCursor int64, hourly []entities.UsageOverviewHourlyStat, daily []entities.UsageOverviewDailyStat, now time.Time) error {
+	return applyUsageOverviewAggregationPage(ctx, db, expectedCursor, nextCursor, hourly, daily, now, overviewstore.ApplyOrdinaryRows)
+}
+
+// ApplyStoredUsageOverviewAggregationPage preserves strict stored bucket validation.
+// It is used only by explicit controlled stored maintenance, never normal ingestion.
+func ApplyStoredUsageOverviewAggregationPage(ctx context.Context, db *gorm.DB, expectedCursor, nextCursor int64, hourly []entities.UsageOverviewHourlyStat, daily []entities.UsageOverviewDailyStat, now time.Time) error {
+	return applyUsageOverviewAggregationPage(ctx, db, expectedCursor, nextCursor, hourly, daily, now, overviewstore.ApplyRows)
+}
+
+func applyUsageOverviewAggregationPage(ctx context.Context, db *gorm.DB, expectedCursor, nextCursor int64, hourly []entities.UsageOverviewHourlyStat, daily []entities.UsageOverviewDailyStat, now time.Time, apply func(*gorm.DB, []entities.UsageOverviewHourlyStat, []entities.UsageOverviewDailyStat, time.Time) error) error {
 	if db == nil {
 		return fmt.Errorf("database is nil")
 	}
 	normalizedNow := timeutil.NormalizeStorageTime(now)
 	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// 复用既有累计 SQL；本次只改变 rows 的来源和 checkpoint 表。
-		if err := overviewstore.ApplyRows(tx, hourly, daily, normalizedNow); err != nil {
+		if err := apply(tx, hourly, daily, normalizedNow); err != nil {
 			return err
 		}
 		// cursor 最后推进，冲突错误会让 GORM 回滚刚写入的两类 rows。

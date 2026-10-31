@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import React, { act } from 'react';
-import { Chart } from 'chart.js';
+import { Chart, type ChartEvent } from 'chart.js';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnalysisCompositionItem, AnalysisResponse } from '@/lib/types';
@@ -61,10 +61,9 @@ const item = (key: string, label: string, percent: number): AnalysisCompositionI
 const analysisWith = (items: AnalysisCompositionItem[]): AnalysisResponse => ({
   granularity: 'hourly', timezone: 'UTC', token_usage: [],
   api_key_composition: items, model_composition: items,
-  auth_files_composition: [], ai_provider_composition: [], model_efficiency: [],
-  cost_breakdown: {
-    uncached_input_cost_usd: 0, cache_read_cost_usd: 0, cache_write_cost_usd: 0,
-    output_cost_usd: 0, total_cost_usd: 0, cost_available: true,
+  credentials_composition: [], ai_provider_composition: [], model_efficiency: [],
+  cost_summary: {
+    total_cost_usd: 0, cost_available: true,
   },
   heatmap: { api_keys: [], api_key_labels: {}, models: [], cells: [] },
 });
@@ -125,6 +124,46 @@ describe('composition labels after mounted chart updates', () => {
     expect(chart.data.datasets[0].data[4]).toBe(0.02);
   });
 
+  it('clears an activated arc and tooltip on dimension changes without recreating the chart', async () => {
+    const analysis = analysisWith([item('a', 'Alpha', 60), item('b', 'Beta', 40)]);
+    await render(analysis);
+    const canvas = container.querySelector('canvas')!;
+    const chart = Chart.getChart(canvas)!;
+    await act(async () => {
+      const active = [{ datasetIndex: 0, index: 0 }];
+      chart.setActiveElements(active);
+      chart.tooltip!.setActiveElements(active, { x: 200, y: 100 });
+      chart.update('none');
+    });
+    expect(chart.getActiveElements()).toHaveLength(1);
+    expect(chart.tooltip!.getActiveElements()).toHaveLength(1);
+    const tabs = container.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    const nextTab = Array.from(tabs).find(tab => tab.getAttribute('aria-selected') === 'false')!;
+    await act(async () => nextTab.click());
+    expect(Chart.getChart(canvas)).toBe(chart);
+    expect(chart.getActiveElements()).toHaveLength(0);
+    expect(chart.tooltip!.getActiveElements()).toHaveLength(0);
+    expect(chart.tooltip!.opacity).toBe(0);
+    const event: ChartEvent = { type: 'mousemove', x: 200, y: 100, native: null };
+    const args = { event, replay: true, cancelable: true as const, inChartArea: true };
+    expect(chart.notifyPlugins('beforeEvent', args)).toBe(false);
+    expect(chart.notifyPlugins('beforeEvent', { ...args, replay: false })).not.toBe(false);
+    expect(chart.notifyPlugins('beforeEvent', args)).not.toBe(false);
+    await render({ ...analysis });
+    expect(Chart.getChart(canvas)).toBe(chart);
+    expect(chart.tooltip!.getActiveElements()).toHaveLength(0);
+    await act(async () => {
+      const active = [{ datasetIndex: 0, index: 1 }];
+      chart.setActiveElements(active);
+      chart.tooltip!.setActiveElements(active, { x: 200, y: 100 });
+      chart.update('none');
+    });
+    await render({ ...analysis }, true);
+    expect(Chart.getChart(canvas)).toBe(chart);
+    expect(chart.getActiveElements()).toHaveLength(1);
+    expect(chart.tooltip!.getActiveElements()).toHaveLength(1);
+  });
+
   it.each([
     { page: 'analysis', dimensions: undefined },
     { page: 'key-analysis', dimensions: ['model'] as const },
@@ -151,15 +190,15 @@ describe('composition labels after mounted chart updates', () => {
     expect(drawn()).toContainEqual({ text: 'Alpha', color: '#111827' });
   });
 
-  it('updates the total label when changing language while keeping all entries', async () => {
+  it('updates the composition title when changing language while keeping all entries', async () => {
     const analysis = analysisWith([50, 20, 10, 8, 5, 4, 3].map((share, index) => item(String(index), `Model ${index}`, share)));
     await render(analysis);
     expect(container.querySelector('ol')?.querySelectorAll('button')).toHaveLength(7);
-    expect(container.textContent).toContain('Total Tokens');
+    expect(container.textContent).toContain('Usage Distribution');
 
     await act(async () => { await i18n.changeLanguage('zh'); });
-    expect(container.textContent).toContain('总 Token');
-    expect(container.textContent).not.toContain('Total Tokens');
+    expect(container.textContent).toContain('用量分布');
+    expect(container.textContent).not.toContain('Usage Distribution');
     expect(container.querySelector('ol')?.querySelectorAll('button')).toHaveLength(7);
   });
 });

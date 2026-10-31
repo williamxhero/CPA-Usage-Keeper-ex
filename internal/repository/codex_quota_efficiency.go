@@ -82,7 +82,11 @@ type codexQuotaEfficiencyUsageAccumulator struct {
 }
 
 // BuildCodexQuotaEfficiencyHistory 动态连接额度历史与 UsageEvent；它只读数据，绝不把 Token 或 Cost 写入历史表。
-func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query repositorydto.CodexQuotaEfficiencyQuery, costResolver pricing.Resolver) (repositorydto.CodexQuotaEfficiencyHistory, error) {
+func BuildCodexQuotaEfficiencyHistory(ctx context.Context, db *gorm.DB, query repositorydto.CodexQuotaEfficiencyQuery, costResolvers ...pricing.Resolver) (repositorydto.CodexQuotaEfficiencyHistory, error) {
+	costResolver := pricing.Resolver{}
+	if len(costResolvers) > 0 {
+		costResolver = costResolvers[0]
+	}
 	// 先构造空响应，使“账号暂时没有历史”仍返回稳定的时间口径。
 	result := repositorydto.CodexQuotaEfficiencyHistory{GeneratedAt: query.Now, RangeStart: query.RangeStart, PricingSnapshotID: costResolver.SnapshotID()}
 	if db == nil {

@@ -55,15 +55,20 @@ func TestProcessRedisUsageInboxKnownExecutorBypassesIdentityLookup(t *testing.T)
 	if err := db.Create(&entities.ModelPriceSetting{Model: "gpt-5.6", PricingStyle: entities.ModelPricingStyleOpenAI, PromptPricePer1M: 1, CompletionPricePer1M: 2, PriceMultiplier: &multiplier}).Error; err != nil {
 		t.Fatalf("seed model price: %v", err)
 	}
+	pricingSnapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
+	if err != nil {
+		t.Fatalf("load pricing snapshot before processing: %v", err)
+	}
+	pricingCatalog := pricing.NewCatalog(pricingSnapshot)
 	lookupCount := registerTokenIdentityTypeLookupCallback(t, db, nil)
-	_, err := repository.InsertRedisUsageInboxMessages(db, []repodto.RedisInboxInsert{{
+	_, err = repository.InsertRedisUsageInboxMessages(db, []repodto.RedisInboxInsert{{
 		Source: "usage",
 		RawMessage: `{
 			"provider":"OpenAI",
 			"auth_type":"api_key",
 			"auth_index":"missing-but-not-needed",
 			"model":"gpt-5.6",
-			"request_id":"known-executor-no-identity",
+			"execution_id":"fixture-execution","request_id":"known-executor-no-identity",
 			"executor_type":"CodexExecutor",
 			"tokens":{"input_tokens":100,"output_tokens":20,"reasoning_tokens":5,"total_tokens":125}
 		}`,
@@ -73,7 +78,7 @@ func TestProcessRedisUsageInboxKnownExecutorBypassesIdentityLookup(t *testing.T)
 		t.Fatalf("seed inbox row: %v", err)
 	}
 
-	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{BaseURL: "https://cpa.example.com"})
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: pricingCatalog, BaseURL: "https://cpa.example.com"})
 	result, err := syncService.ProcessRedisUsageInbox(context.Background())
 	if err != nil {
 		t.Fatalf("ProcessRedisUsageInbox returned error: %v", err)
@@ -102,15 +107,18 @@ func TestProcessRedisUsageInboxKnownExecutorBypassesIdentityLookup(t *testing.T)
 		t.Fatalf("expected Overview rollup Total=120, got %+v", hourly)
 	}
 
-	// quota window 读取 usage_events 的 corrected Total，但成本仍按 Input=100、Output=20 计算为 0.00014。
+	// quota window 读取 usage_events 的 corrected Total 与同批已存费用 0.00014。
 	windowStart := event.Timestamp.Add(-time.Minute)
 	windowEnd := event.Timestamp.Add(time.Minute)
-	pricingSnapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
+	snapshot, err := repository.LoadPricingSnapshot(context.Background(), db)
 	if err != nil {
 		t.Fatalf("load pricing snapshot: %v", err)
 	}
-	pricingCatalog := pricing.NewCatalog(pricingSnapshot)
-	window, err := repository.SumUsageWindowStatsByAuthIndex(context.Background(), db, "missing-but-not-needed", windowStart, &windowEnd, pricingCatalog.NewResolver())
+	calculator, err := repository.NewUsageWindowStatsCalculator(context.Background(), db, pricing.NewCatalog(snapshot).NewResolver())
+	if err != nil {
+		t.Fatalf("create usage window calculator: %v", err)
+	}
+	window, err := calculator.SumByAuthIndex(context.Background(), "missing-but-not-needed", windowStart, &windowEnd)
 	if err != nil {
 		t.Fatalf("sum usage window stats: %v", err)
 	}
@@ -141,7 +149,7 @@ func TestProcessRedisUsageInboxCommitsReadyItemsWhenIdentityLookupFails(t *testi
 				"auth_type":"oauth",
 				"auth_index":"ready-auth",
 				"model":"gpt-5.6",
-				"request_id":"ready-executor-event",
+				"execution_id":"fixture-execution","request_id":"ready-executor-event",
 				"executor_type":"CodexExecutor",
 				"tokens":{"input_tokens":100,"output_tokens":20,"reasoning_tokens":5,"total_tokens":125},
 				"response_headers":{"X-Codex-Primary-Used-Percent":["4"],"X-Codex-Primary-Window-Minutes":["300"],"X-Codex-Primary-Reset-After-Seconds":["60"]}
@@ -156,7 +164,7 @@ func TestProcessRedisUsageInboxCommitsReadyItemsWhenIdentityLookupFails(t *testi
 				"auth_type":"oauth",
 				"auth_index":"unresolved-auth",
 				"model":"gpt-5.6",
-				"request_id":"unresolved-identity-event",
+				"execution_id":"fixture-execution","request_id":"unresolved-identity-event",
 				"executor_type":"FutureExecutor",
 				"tokens":{"input_tokens":11,"output_tokens":7,"total_tokens":18},
 				"response_headers":{"X-Codex-Primary-Used-Percent":["5"],"X-Codex-Primary-Window-Minutes":["300"],"X-Codex-Primary-Reset-After-Seconds":["60"]}
@@ -169,7 +177,7 @@ func TestProcessRedisUsageInboxCommitsReadyItemsWhenIdentityLookupFails(t *testi
 	}
 	recent := &tokenProcessorRecentRecorder{}
 	headers := &tokenProcessorHeaderRecorder{}
-	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		RecentUsageEvents:        recent,
 		UsageAggregationNotifier: headers,
@@ -256,12 +264,12 @@ func TestProcessRedisUsageInboxWaitsWhenFailureStatusCannotBeConfirmed(t *testin
 			_, err := repository.InsertRedisUsageInboxMessages(db, []repodto.RedisInboxInsert{
 				{
 					Source:     "usage",
-					RawMessage: `{"timestamp":"2026-07-14T08:00:00Z","provider":"OpenAI","auth_type":"api_key","auth_index":"ready-auth","model":"gpt-5.6","request_id":"uncertain-ready","executor_type":"CodexExecutor","tokens":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
+					RawMessage: `{"timestamp":"2026-07-14T08:00:00Z","provider":"OpenAI","auth_type":"api_key","auth_index":"ready-auth","model":"gpt-5.6","execution_id":"fixture-execution","request_id":"uncertain-ready","executor_type":"CodexExecutor","tokens":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
 					PoppedAt:   time.Date(2026, 7, 14, 8, 0, 0, 0, time.UTC),
 				},
 				{
 					Source:     "usage",
-					RawMessage: `{"timestamp":"2026-07-14T08:00:01Z","provider":"Unknown","auth_type":"api_key","auth_index":"secret-uncertain","model":"future-model","request_id":"uncertain-future","executor_type":"FutureExecutor","tokens":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}`,
+					RawMessage: `{"timestamp":"2026-07-14T08:00:01Z","provider":"Unknown","auth_type":"api_key","auth_index":"secret-uncertain","model":"future-model","execution_id":"fixture-execution","request_id":"uncertain-future","executor_type":"FutureExecutor","tokens":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}`,
 					PoppedAt:   time.Date(2026, 7, 14, 8, 0, 1, 0, time.UTC),
 				},
 			})
@@ -270,7 +278,7 @@ func TestProcessRedisUsageInboxWaitsWhenFailureStatusCannotBeConfirmed(t *testin
 			}
 
 			logs := captureTokenProcessorLogs(t)
-			result, processErr := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{BaseURL: "https://cpa.example.com"}).ProcessRedisUsageInbox(context.Background())
+			result, processErr := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(), BaseURL: "https://cpa.example.com"}).ProcessRedisUsageInbox(context.Background())
 			if processErr == nil || !strings.Contains(processErr.Error(), lookupErr.Error()) {
 				t.Fatalf("expected identity lookup warning, got result=%+v err=%v", result, processErr)
 			}

@@ -15,8 +15,8 @@ func TestOverviewComparisonIdentitySeriesPreservesBoundariesAndDistinctIdentitie
 	start := time.Date(2026, 9, 12, 8, 30, 0, 0, time.Local)
 	end := start.Add(4 * time.Hour)
 	identities := []entities.UsageIdentity{
-		{AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "file-a", Name: "same.json"},
-		{AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "file-b", Name: "same.json"},
+		{AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "file-a", Name: "same.json"},
+		{AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "file-b", Name: "same.json"},
 		{AuthType: entities.UsageIdentityAuthTypeAIProvider, Identity: "provider-a", Name: "OpenAI"},
 	}
 	if err := db.Create(&identities).Error; err != nil {
@@ -28,6 +28,7 @@ func TestOverviewComparisonIdentitySeriesPreservesBoundariesAndDistinctIdentitie
 		{EventKey: "provider-rollup", Timestamp: start.Add(2 * time.Hour), APIGroupKey: "key-b", Model: "model-b", AuthIndex: "provider-a", TotalTokens: 30},
 		{EventKey: "provider-right", Timestamp: end.Add(-time.Minute), APIGroupKey: "key-b", Model: "model-b", AuthIndex: "provider-a", TotalTokens: 40},
 	}
+	events = priceOverviewFixtureEvents(t, db, events)
 	if err := db.Create(&events).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -35,11 +36,13 @@ func TestOverviewComparisonIdentitySeriesPreservesBoundariesAndDistinctIdentitie
 		t.Fatal(err)
 	}
 	filter := dto.UsageQueryFilter{Range: "4h", StartTime: &start, EndTime: &end, EndExclusive: true, QueryNow: &end, ComparisonOnly: true}
-	overview, err := repository.BuildUsageOverviewWithFilter(db, filter, emptyPricingResolverForTest())
+	overview, err := repository.BuildUsageOverviewComparisonsWithFilterAndRecentCache(db, filter, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := overview.Comparisons
+	// The fork's current API names credential-file facts AuthFiles. Stored
+	// Credentials is a separate typed contract, not an alias for this collection.
 	if len(c.AuthFiles) != 2 || len(c.AIProviders) != 1 {
 		t.Fatalf("identity collision: %+v", c)
 	}
@@ -58,7 +61,7 @@ func TestOverviewComparisonIdentitySeriesPreservesBoundariesAndDistinctIdentitie
 		t.Fatal("identity buckets lost boundary/rollup data")
 	}
 	filter.APIGroupKey = "key-a"
-	scoped, err := repository.BuildUsageOverviewWithFilter(db, filter, emptyPricingResolverForTest())
+	scoped, err := repository.BuildUsageOverviewComparisonsWithFilterAndRecentCache(db, filter, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +82,7 @@ func TestOverviewComparisonSeriesIncludesOpenEndedCacheBuckets(t *testing.T) {
 			end := time.Date(2026, 9, 12, tc.hour, 59, 59, 0, time.Local)
 			start := end.Add(-time.Duration(tc.hours) * time.Hour)
 			latest := end.Add(2 * time.Second)
-			ids := []entities.UsageIdentity{{AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "file-a", Name: "file.json"}, {AuthType: entities.UsageIdentityAuthTypeAIProvider, Identity: "provider-a", Name: "Provider"}}
+			ids := []entities.UsageIdentity{{AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "file-a", Name: "file.json"}, {AuthType: entities.UsageIdentityAuthTypeAIProvider, Identity: "provider-a", Name: "Provider"}}
 			if err := db.Create(&ids).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -89,6 +92,7 @@ func TestOverviewComparisonSeriesIncludesOpenEndedCacheBuckets(t *testing.T) {
 				{EventKey: "new-provider", Timestamp: latest, APIGroupKey: "key-a", Model: "model", AuthIndex: "provider-a", TotalTokens: 30},
 				{EventKey: "other-key", Timestamp: latest.Add(time.Hour), APIGroupKey: "key-b", Model: "other-model", TotalTokens: 999},
 			}
+			events = priceOverviewFixtureEvents(t, db, events)
 			if err := db.Create(&events).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -98,7 +102,7 @@ func TestOverviewComparisonSeriesIncludesOpenEndedCacheBuckets(t *testing.T) {
 			}
 			defer cache.Close()
 			filter := dto.UsageQueryFilter{Range: tc.span, StartTime: &start, EndTime: &end, QueryNow: &end, APIGroupKey: "key-a", ComparisonOnly: true}
-			result, err := repository.BuildUsageOverviewWithFilterAndRecentCache(db, filter, cache, emptyPricingResolverForTest())
+			result, err := repository.BuildUsageOverviewComparisonsWithFilterAndRecentCache(db, filter, cache)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +117,7 @@ func TestOverviewComparisonSeriesIncludesOpenEndedCacheBuckets(t *testing.T) {
 			if c.Buckets[len(c.Buckets)-1] != expected {
 				t.Fatalf("missing latest cache bucket: got %v, want last %s", c.Buckets, expected)
 			}
-			for _, dimension := range []map[string]*dto.UsageComparisonItemRecord{c.Models, c.APIKeys, c.AuthFiles, c.AIProviders} {
+			for _, dimension := range []map[string]*dto.UsageComparisonItemRecord{c.Models, c.APIKeys, c.Credentials, c.AIProviders} {
 				for _, item := range dimension {
 					var sum int64
 					for _, bucket := range c.Buckets {
@@ -125,7 +129,7 @@ func TestOverviewComparisonSeriesIncludesOpenEndedCacheBuckets(t *testing.T) {
 				}
 			}
 			filter.ComparisonOnly = false
-			main, err := repository.BuildUsageOverviewWithFilterAndRecentCache(db, filter, cache, emptyPricingResolverForTest())
+			main, err := repository.BuildUsageOverviewWithFilterAndRecentCache(db, filter, cache)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -136,7 +140,7 @@ func TestOverviewComparisonSeriesIncludesOpenEndedCacheBuckets(t *testing.T) {
 			historicalNow := latest.Add(time.Hour)
 			filter.QueryNow = &historicalNow
 			filter.Range = "custom"
-			historical, err := repository.BuildUsageOverviewWithFilterAndRecentCache(db, filter, cache, emptyPricingResolverForTest())
+			historical, err := repository.BuildUsageOverviewComparisonsWithFilterAndRecentCache(db, filter, cache)
 			if err != nil {
 				t.Fatal(err)
 			}

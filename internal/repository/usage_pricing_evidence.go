@@ -59,12 +59,6 @@ func loadUsagePricingEvidence(db *gorm.DB, filter dto.UsageQueryFilter, start, e
 	if err != nil {
 		return nil, err
 	}
-	where := "timestamp >= ? AND timestamp < ? AND id <= ?"
-	args := []any{timeutil.FormatStorageTime(start), timeutil.FormatStorageTime(end), checkpoint.OverviewCursor}
-	if key := strings.TrimSpace(filter.APIGroupKey); key != "" {
-		where += " AND api_group_key = ?"
-		args = append(args, key)
-	}
 	// Retention-only databases can omit either raw table. Existing rollup
 	// configured fees remain readable; absent facts never prove a reference.
 	hasHot := db.Migrator().HasTable(&entities.UsageEvent{})
@@ -72,31 +66,8 @@ func loadUsagePricingEvidence(db *gorm.DB, filter dto.UsageQueryFilter, start, e
 	if !hasHot && !hasArchive {
 		return usagePricingEvidenceMap{}, nil
 	}
-	sql := ""
-	if hasHot {
-		sql = "SELECT " + columns + " FROM usage_events WHERE " + where
-	}
-	if hasArchive {
-		archiveSQL := "SELECT " + columns + " FROM usage_events_archive WHERE " + where
-		if hasHot {
-			archiveSQL += " AND NOT EXISTS (SELECT 1 FROM usage_events hot WHERE hot.id = usage_events_archive.id)"
-			sql += " UNION ALL " + archiveSQL
-			args = append(args, args...)
-		} else {
-			sql = archiveSQL
-		}
-	}
-	rows, err := db.Raw(sql, args...).Rows()
-	if err != nil {
-		return nil, fmt.Errorf("load retained pricing evidence: %w", err)
-	}
-	defer rows.Close()
 	result := make(usagePricingEvidenceMap)
-	for rows.Next() {
-		var event entities.UsageEvent
-		if err := db.ScanRows(rows, &event); err != nil {
-			return nil, err
-		}
+	applyEvent := func(event entities.UsageEvent) {
 		subject := UsageEventCostSubject(event)
 		dimensions := subject.Dimensions
 		dimensions.Model = normalizeUsageOverviewDimension(dimensions.Model)
@@ -156,8 +127,58 @@ func loadUsagePricingEvidence(db *gorm.DB, filter dto.UsageQueryFilter, start, e
 		}
 		result[key] = evidence
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	// Retained facts need the same instant boundaries as the usage facts they
+	// explain. Plain RFC3339 text ranges reverse or mix repeated DST hours, and
+	// UTC whole-second Z sorts after fractions. Keep bounded index candidates,
+	// then trim exact instants before coverage/typed valuation accumulation.
+	load := func(sql string, args []any, read usageEventTimeRead) error {
+		rows, err := db.Raw(sql, args...).Rows()
+		if err != nil {
+			return fmt.Errorf("load retained pricing evidence: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var event entities.UsageEvent
+			if err := db.ScanRows(rows, &event); err != nil {
+				return err
+			}
+			if read.contains(event.Timestamp) {
+				applyEvent(event)
+			}
+		}
+		return rows.Err()
+	}
+	for _, read := range usageEventTimeReads(start, end, false) {
+		// Keep the original narrow proof-query projection/routing and a single
+		// deduplicating union per segment. Only candidate time bounds change.
+		// These reads are always half-open, so upperInclusive is always false.
+		where := "timestamp >= ? AND timestamp < ? AND id <= ?"
+		args := []any{read.lower, read.upper, checkpoint.OverviewCursor}
+		if key := strings.TrimSpace(filter.APIGroupKey); key != "" {
+			where += " AND api_group_key = ?"
+			args = append(args, key)
+		}
+		if read.suffix != "" {
+			where += " AND timestamp LIKE ?"
+			args = append(args, "%"+read.suffix)
+		}
+		sql := ""
+		if hasHot {
+			sql = "SELECT " + columns + " FROM usage_events WHERE " + where
+		}
+		if hasArchive {
+			archiveSQL := "SELECT " + columns + " FROM usage_events_archive WHERE " + where
+			if hasHot {
+				archiveSQL += " AND NOT EXISTS (SELECT 1 FROM usage_events hot WHERE hot.id = usage_events_archive.id)"
+				sql += " UNION ALL " + archiveSQL
+				args = append(args, args...)
+			} else {
+				sql = archiveSQL
+			}
+		}
+		if err := load(sql, args, read); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }

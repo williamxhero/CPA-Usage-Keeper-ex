@@ -1,12 +1,15 @@
+import { ChartLifecycleProvider, useChartRefresh, type ChartRefreshSignal } from '@/components/usage/charts/chartLifecycle';
 import { CredentialEditModal } from '@/components/usage/credentials/CredentialEditModal';
 import { PricingMatrixSettings } from '@/components/usage/pricing/PricingMatrixSettings';
 import { PricingOfficialCard } from '@/components/usage/pricing/PricingOfficialCard';
 import { UsageComparisonCharts } from '@/components/usage/UsageComparisonCharts';
+import type { ModelSpeedRefreshSignal } from '@/components/usage/model-speed/modelSpeedAnimation';
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat } from '@/lib/api';
+import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isCostsBusy, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat, type CpaApiKeyOptionsRequest } from '@/lib/api';
+import { useScopedAPIKeyOptions } from '@/components/usage/hooks/useScopedAPIKeyOptions';
 import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
-import { DEFAULT_USAGE_TAB, getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
+import { getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { LanguageSwitcher } from '@/components/ui/LanguageSwitcher';
 import { Select } from '@/components/ui/Select';
@@ -16,10 +19,11 @@ import { Modal } from '@/components/ui/Modal';
 import { IconRefreshCw } from '@/components/ui/icons';
 import { updateCredentialDetailStats } from '@/components/usage/credentials/credentialViewModels';
 import { CREDENTIAL_PAGES_REFRESH_INTERVAL_MS } from '@/components/usage/credentials/useCredentialPages';
+import { PricingSettings, type PricingSettingsHandle } from '@/components/usage/pricing/PricingSettings';
 import { buildCredentialProviderSearch } from '@/components/usage/credentials/credentialProviderFilters';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { buildUsageStatsQueryKey, useThemeStore, useUsageStatsStore } from '@/stores';
+import { useThemeStore, useUsageStatsStore } from '@/stores';
 import {
   StatCards,
   RecentActivityPanel,
@@ -27,7 +31,7 @@ import {
   AnalysisPanel,
   ApiKeySettingsCard,
   SessionSettingsCard,
-  AuthFileCredentialsSection,
+  CredentialsSection,
   AiProviderCredentialsSection,
   CredentialDetailDrawer,
   CredentialProviderFilterBar,
@@ -57,13 +61,6 @@ import { BrandLink } from '@/components/BrandLink';
 import { DashboardHeader } from '@/components/dashboard/DashboardHeader';
 import { DashboardToolbar } from '@/components/dashboard/DashboardToolbar';
 import { cpamcEmbedSearch, isCPAMCEmbed } from '@/embed/cpamcEmbed';
-import { RankingPage } from '@/features/ranking/RankingPage';
-import { RankingScopeSwitch } from '@/features/ranking/components/RankingScopeSwitch';
-import { useRankingData } from '@/features/ranking/hooks/useRankingData';
-import { useLocalRankingData } from '@/features/ranking/hooks/useLocalRankingData';
-import { resolveLocalRankingPreviewAPI, resolveRankingPreviewAPI } from '@/features/ranking/previewMock';
-import { loadRankingScope, persistRankingScope } from '@/features/ranking/scope';
-import type { LocalRankingProfileRequest, RankingScope } from '@/features/ranking/types';
 import styles from './UsagePage.module.scss';
 
 const TIME_RANGE_STORAGE_KEY = 'cli-proxy-usage-time-range-v1';
@@ -78,20 +75,17 @@ const THEME_OPTIONS: ReadonlyArray<{ value: Theme; labelKey: string }> = [
   { value: 'dark', labelKey: 'usage_stats.theme_dark' },
   { value: 'auto', labelKey: 'usage_stats.theme_auto' }
 ];
-const RANKING_PREVIEW_API = resolveRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
-const LOCAL_RANKING_PREVIEW_API = resolveLocalRankingPreviewAPI(import.meta.env.VITE_RANKING_PREVIEW_MOCK);
 type Translate = (key: string) => string;
 const USAGE_TAB_LABEL_KEYS: Record<UsageTab, string> = {
   overview: 'usage_stats.tab_overview',
   realtime: 'usage_stats.tab_realtime',
   analysis: 'usage_stats.tab_analysis',
-  ranking: 'usage_stats.tab_ranking',
   events: 'usage_stats.tab_events',
-  'auth-files': 'usage_stats.tab_auth_files',
+  'credentials': 'usage_stats.tab_credentials',
   'ai-provider': 'usage_stats.tab_ai_provider',
   settings: 'usage_stats.tab_settings',
 };
-const USAGE_TAB_STORAGE_KEY = 'cli-proxy-usage-tab-v1';
+const USAGE_TAB_STORAGE_KEY = 'cli-proxy-usage-tab-v2';
 const REQUEST_EVENTS_DEFAULT_PAGE_SIZE = 50;
 const REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS = 90;
 // v9 将强关联字段折叠为组合列，并加入 Executor；旧版本直接重置列设置以避免错误折叠。
@@ -146,12 +140,12 @@ export const loadAnalysisSections = async <TCore, TLatency>({
 };
 
 export const getCredentialSectionVisibility = (tab: UsageTab) => ({
-  enabled: tab === 'auth-files' || tab === 'ai-provider',
-  showAuthFiles: tab === 'auth-files',
+  enabled: tab === 'credentials' || tab === 'ai-provider',
+  showCredentials: tab === 'credentials',
   showAiProvider: tab === 'ai-provider',
 });
 
-export const shouldShowRangeControls = (tab: UsageTab) => tab !== 'realtime' && tab !== 'ranking' && tab !== 'settings' && !getCredentialSectionVisibility(tab).enabled;
+export const shouldShowRangeControls = (tab: UsageTab) => tab !== 'realtime' && tab !== 'settings' && !getCredentialSectionVisibility(tab).enabled;
 
 export const shouldShowApiKeyFilter = (tab: UsageTab) => tab === 'realtime' || shouldShowRangeControls(tab);
 
@@ -659,9 +653,8 @@ export { normalizeUsageTabValue } from '@/lib/usageNavigation';
 
 export const getUsageTabOptions = (
   translate: Translate,
-  { includeRanking = true }: { includeRanking?: boolean } = {},
 ): Array<{ value: UsageTab; label: string }> =>
-  USAGE_TAB_OPTIONS.filter((value) => includeRanking || value !== 'ranking').map((value) => ({
+  USAGE_TAB_OPTIONS.map((value) => ({
     value,
     label: translate(USAGE_TAB_LABEL_KEYS[value]),
   }));
@@ -752,15 +745,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const resolvedTheme = useThemeStore((state) => state.resolvedTheme);
   const setTheme = useThemeStore((state) => state.setTheme);
   const isDark = resolvedTheme === 'dark';
-  const [activeTab, setActiveTab] = useState<UsageTab>(() => {
-    const loadedTab = loadUsageTab();
-    return isEmbeddedInCPAMC && loadedTab === 'ranking' ? DEFAULT_USAGE_TAB : loadedTab;
-  });
-  const [rankingScope, setRankingScope] = useState<RankingScope>(loadRankingScope);
-  const handleRankingScopeChange = useCallback((scope: RankingScope) => {
-    setRankingScope(scope);
-    persistRankingScope(scope);
-  }, []);
+  const [activeTab, setActiveTab] = useState<UsageTab>(loadUsageTab);
+  const pricingSettingsRef = useRef<PricingSettingsHandle | null>(null);
   const [loadedTimeRange] = useState(loadTimeRange);
   const pendingLegacyCustomRangeRef = useRef(loadedTimeRange.pendingLegacyCustomRange);
   const [timeRangeState, setTimeRangeState] = useState<StoredUsageRangeState>(loadedTimeRange.state);
@@ -768,6 +754,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [realtimeWindow, setRealtimeWindow] = useState<OverviewRealtimeWindow>(loadRealtimeWindow);
   const [selectedApiKeyId, setSelectedApiKeyId] = useState(loadSelectedApiKeyId);
   const [apiKeyOptions, setApiKeyOptions] = useState<CpaApiKeyOption[]>([]);
+  const discoveredApiKeys = useRef(new Map<string, CpaApiKeyOption>());
+  const rememberScopedApiKeys = useCallback((options: CpaApiKeyOption[]) => {
+    for (const option of options) discoveredApiKeys.current.set(option.id, option);
+    setApiKeyOptions((current) => Array.from(new Map([...current, ...options].map((option) => [option.id, option])).values()));
+  }, []);
   const [apiKeyOptionsLoaded, setApiKeyOptionsLoaded] = useState(false);
   const [apiKeyOptionsResolved, setApiKeyOptionsResolved] = useState(false);
   const apiKeyFilterRequestState = resolveApiKeyFilterRequestState(
@@ -810,6 +801,15 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setTimeRangeState(nextState);
     return true;
   }, [rangeRecoveryTimeZone, timeRangeState]);
+  const apiKeyOptionsRequest = useMemo<CpaApiKeyOptionsRequest | null>(() => {
+    if (activeTab === 'realtime') return { scope: 'realtime', window: realtimeWindow };
+    if (!usageRangeQuery.valid) return null;
+    if (activeTab === 'events') return { scope: 'request-events', range: usageRangeQuery };
+    if (activeTab === 'overview' || activeTab === 'analysis') return { scope: activeTab, range: usageRangeQuery };
+    return null;
+  }, [activeTab, realtimeWindow, usageRangeQuery]);
+  const scopedApiKeys = useScopedAPIKeyOptions(apiKeyOptionsRequest, rememberScopedApiKeys, onAuthRequired, recoverRangeBoundsConflict);
+  const { refresh: refreshScopedApiKeys, invalidate: invalidateScopedApiKeys } = scopedApiKeys;
 
   const {
     usage,
@@ -828,7 +828,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     onRangeBoundsConflict: recoverRangeBoundsConflict,
   });
   const {
-    comparisons: overviewComparisons,
     currentComparisons: currentOverviewComparisons,
     loading: comparisonsLoading,
     error: comparisonsError,
@@ -914,10 +913,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [eventsSnapshotMismatch, setEventsSnapshotMismatch] = useState(false);
   const eventsSnapshotRef = useRef<PricingSnapshotState>({ mixed: false });
   const [eventsData, setEventsData] = useState<UsageEvent[]>([]);
+  const eventsLoadedScopeRef = useRef<string | null>(null);
   const [eventsPage, setEventsPage] = useState(1);
   const [eventsTotalCount, setEventsTotalCount] = useState(0);
   const [eventsNextCursor, setEventsNextCursor] = useState<string | null>(null);
-  const eventsHasMore = Boolean(eventsNextCursor);
   const [eventsLoadingMore, setEventsLoadingMore] = useState(false);
   const [eventsAutoLoadMore, setEventsAutoLoadMore] = useState(true);
   const [eventsModelOptions, setEventsModelOptions] = useState<string[]>([]);
@@ -925,6 +924,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [eventsModelFilter, setEventsModelFilter] = useState(initialRequestEventsPreferences.filters.model);
   const [eventsSourceFilter, setEventsSourceFilter] = useState(initialRequestEventsPreferences.filters.source);
   const [eventsResultFilter, setEventsResultFilter] = useState(initialRequestEventsPreferences.filters.result);
+  const currentEventsScope = JSON.stringify([usageRangeQuery, requestApiKeyId, eventsModelFilter, eventsSourceFilter, eventsResultFilter]);
+  const eventsScopeMatches = eventsLoadedScopeRef.current === currentEventsScope;
+  const visibleEvents = eventsScopeMatches ? eventsData : [];
+  const eventsHasMore = eventsScopeMatches && Boolean(eventsNextCursor);
   const [eventsVisibleColumnIds, setEventsVisibleColumnIds] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.visibleColumnIds);
   const [eventsColumnOrder, setEventsColumnOrder] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.columnOrder);
   const [eventsExportingFormat, setEventsExportingFormat] = useState<UsageEventsExportFormat | null>(null);
@@ -947,6 +950,13 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const eventsFilterOptionsRequestControllerRef = useRef<AbortController | null>(null);
   const requestLogControllerRef = useRef<AbortController | null>(null);
   const [manualRefreshLoading, setManualRefreshLoading] = useState(false);
+  const [overviewChartRefresh, markOverviewLoaded] = useChartRefresh();
+  const [comparisonChartRefresh, markComparisonsLoaded] = useChartRefresh();
+  const [chartRefresh, markChartLoaded] = useChartRefresh();
+  const [latencyRefresh, markLatencyLoaded] = useChartRefresh();
+  const loadedLatencyScopeRef = useRef<string | null>(null);
+  const [analysisModelSpeedRefresh, setAnalysisModelSpeedRefresh] = useState<ModelSpeedRefreshSignal>();
+  const [realtimeChartRefresh, setRealtimeChartRefresh] = useState<ChartRefreshSignal>();
   const [pageVisible, setPageVisible] = useState(isUsagePageVisible);
   const showTopNotice = useCallback((kind: TopNoticeKind, message: string) => {
     if (topNoticeTimerRef.current !== null) {
@@ -958,47 +968,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       topNoticeTimerRef.current = null;
     }, getUpdateCheckToastDuration(kind));
   }, []);
-  const handleRankingBackgroundRefreshError = useCallback(() => {
-    showTopNotice('error', t('ranking.refresh_failed'));
-  }, [showTopNotice, t]);
-  const rankingData = useRankingData({
-    enabled: activeTab === 'ranking' && !isEmbeddedInCPAMC && rankingScope === 'community',
-    onAuthRequired,
-    onBackgroundRefreshError: handleRankingBackgroundRefreshError,
-    api: RANKING_PREVIEW_API,
-  });
-  const localRankingData = useLocalRankingData({
-    enabled: activeTab === 'ranking' && !isEmbeddedInCPAMC && rankingScope === 'local',
-    period: rankingData.period,
-    metric: rankingData.metric,
-    onAuthRequired,
-    onBackgroundRefreshError: handleRankingBackgroundRefreshError,
-    api: LOCAL_RANKING_PREVIEW_API,
-  });
-  const updateLocalRankingProfile = localRankingData.updateProfile;
-  const patchLocalRankingProfileCache = localRankingData.patchProfileCache;
-  const displayedRankingLeaderboard = rankingScope === 'community'
-    ? rankingData.leaderboard
-    : localRankingData.leaderboard;
-  const refreshCommunityRanking = rankingData.refreshRanking;
-  const refreshLocalRanking = localRankingData.refreshLeaderboard;
-  const refreshRanking = useCallback(
-    () => rankingScope === 'community' ? refreshCommunityRanking() : refreshLocalRanking(),
-    [rankingScope, refreshCommunityRanking, refreshLocalRanking],
-  );
-  const handleUpdateLocalRankingProfile = useCallback(async (participantID: string, profile: LocalRankingProfileRequest) => {
-    const updated = await updateLocalRankingProfile(participantID, profile);
-    // 排行资料与设置页共用同一 Key 记录，保存后同步刷新已加载的别名投影。
-    setApiKeySettings((current) => current.map((item) => item.id === updated.participant_id
-      ? { ...item, keyAlias: updated.key_alias, label: updated.display_name }
-      : item));
-    setApiKeyOptions((current) => current.map((item) => item.id === updated.participant_id
-      ? { ...item, label: updated.display_name }
-      : item));
-    return updated;
-  }, [updateLocalRankingProfile]);
   const credentialsData = useCredentialsTabData({
-    enabledAuthFiles: credentialSectionVisibility.showAuthFiles && pageVisible,
+    enabledCredentials: credentialSectionVisibility.showCredentials && pageVisible,
     enabledAiProviders: credentialSectionVisibility.showAiProvider && pageVisible,
     onAuthRequired,
     onNotice: showTopNotice,
@@ -1007,13 +978,13 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const refreshCredentials = credentialsData.refresh;
   const getUsageTabHref = useCallback((tab: UsageTab) => {
     let search = tab === activeTab ? window.location.search : cpamcEmbedSearch();
-    if (tab === 'auth-files' || tab === 'ai-provider') {
-      search = buildCredentialProviderSearch(search, tab === 'auth-files' ? credentialsData.authFileProviderFilter : credentialsData.aiProviderProviderFilter);
+    if (tab === 'credentials' || tab === 'ai-provider') {
+      search = buildCredentialProviderSearch(search, tab === 'credentials' ? credentialsData.credentialProviderFilter : credentialsData.aiProviderProviderFilter);
     } else {
       search = cpamcEmbedSearch();
     }
     return appPath(getUsageTabPath(tab)) + search + (tab === activeTab ? window.location.hash : '');
-  }, [activeTab, credentialsData.authFileProviderFilter, credentialsData.aiProviderProviderFilter]);
+  }, [activeTab, credentialsData.credentialProviderFilter, credentialsData.aiProviderProviderFilter]);
   const activateUsageTab = useCallback((tab: UsageTab) => {
     window.history.replaceState(null, '', getUsageTabHref(tab));
     setActiveTab(tab);
@@ -1025,7 +996,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     activateUsageTab(tab);
   }, [activateUsageTab]);
   useEffect(() => {
-    if (activeTab !== 'auth-files' && activeTab !== 'ai-provider') return;
+    if (activeTab !== 'credentials' && activeTab !== 'ai-provider') return;
     // 无参数入口也固定本标签页的筛选，避免刷新时再次读取其他标签页改过的默认偏好。
     const href = getUsageTabHref(activeTab);
     if (href !== window.location.pathname + window.location.search + window.location.hash) {
@@ -1035,33 +1006,36 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
   const [analysisData, setAnalysisData] = useState<AnalysisResponse | null>(null);
-  const [loadedAnalysisQueryKey, setLoadedAnalysisQueryKey] = useState<string | null>(null);
-  const analysisQueryKey = usageRangeQuery.valid && apiKeyFilterReady ? buildUsageStatsQueryKey(usageRangeQuery, requestApiKeyId) : null;
-  const currentAnalysisData = analysisQueryKey !== null && loadedAnalysisQueryKey === analysisQueryKey ? analysisData : null;
+  const analysisLoadedScopeRef = useRef<string | null>(null);
+  const analysisQueryKey = JSON.stringify([usageRangeQuery, requestApiKeyId]);
+  const visibleAnalysis = usageRangeQuery.valid && apiKeyFilterReady && analysisLoadedScopeRef.current === analysisQueryKey ? analysisData : null;
+  const currentAnalysisData = visibleAnalysis;
   const [analysisLatencyLoading, setAnalysisLatencyLoading] = useState(false);
   const [analysisLatencyError, setAnalysisLatencyError] = useState('');
   const [analysisLatencyData, setAnalysisLatencyData] = useState<AnalysisLatencyDiagnostics | null>(null);
   const analysisRequestControllerRef = useRef<AbortController | null>(null);
 
   const tabOptions = useMemo(
-    () => getUsageTabOptions(t, { includeRanking: !isEmbeddedInCPAMC }),
-    [isEmbeddedInCPAMC, t],
+    () => getUsageTabOptions(t),
+    [t],
   );
   const apiKeySelectOptions = useMemo(
     () => [
       { value: '', label: t('usage_stats.api_key_filter_all') },
-      ...apiKeyOptions.map((option) => ({ value: option.id, label: option.label })),
+      ...scopedApiKeys.options.map((option) => ({ value: option.id, label: option.label })),
+      ...(scopedApiKeys.status === 'ready' ? [] : [{ value: '__status__', disabled: true, label: scopedApiKeys.status === 'error' ? t('usage_stats.api_key_options_failed') : t('common.loading') }]),
     ],
-    [apiKeyOptions, t],
+    [scopedApiKeys.options, scopedApiKeys.status, t],
   );
+  const selectedApiKeyOption = { value: selectedApiKeyId, label: apiKeyOptions.find((option) => option.id === selectedApiKeyId)?.label ?? (selectedApiKeyId || t('usage_stats.api_key_filter_all')) };
   const credentialTypeCountsForProviderFilter = useMemo(() => {
-    if (credentialSectionVisibility.showAuthFiles) return credentialsData.authFileTypeCounts;
+    if (credentialSectionVisibility.showCredentials) return credentialsData.credentialTypeCounts;
     if (credentialSectionVisibility.showAiProvider) return credentialsData.aiProviderTypeCounts;
     return [];
-  }, [credentialSectionVisibility.showAiProvider, credentialSectionVisibility.showAuthFiles, credentialsData.aiProviderTypeCounts, credentialsData.authFileTypeCounts]);
-  const activeCredentialProviderFilter = credentialSectionVisibility.showAiProvider ? credentialsData.aiProviderProviderFilter : credentialsData.authFileProviderFilter;
-  const setActiveCredentialProviderFilter = credentialSectionVisibility.showAiProvider ? credentialsData.setAiProviderProviderFilter : credentialsData.setAuthFileProviderFilter;
-  const activeCredentialProviderFilterScope = credentialSectionVisibility.showAiProvider ? 'ai-provider' : 'auth-files';
+  }, [credentialSectionVisibility.showAiProvider, credentialSectionVisibility.showCredentials, credentialsData.aiProviderTypeCounts, credentialsData.credentialTypeCounts]);
+  const activeCredentialProviderFilter = credentialSectionVisibility.showAiProvider ? credentialsData.aiProviderProviderFilter : credentialsData.credentialProviderFilter;
+  const setActiveCredentialProviderFilter = credentialSectionVisibility.showAiProvider ? credentialsData.setAiProviderProviderFilter : credentialsData.setCredentialProviderFilter;
+  const activeCredentialProviderFilterScope = credentialSectionVisibility.showAiProvider ? 'ai-provider' : 'credentials';
   const themeOptions = useMemo(
     () =>
       THEME_OPTIONS.map((option) => ({
@@ -1078,6 +1052,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const cpaManagementURL = useMemo(() => getBackToCPALinkURL(status), [status]);
 
   const loadApiKeyOptions = useCallback(async () => {
+    discoveredApiKeys.current.clear();
     apiKeyOptionsRequestControllerRef.current?.abort();
     const controller = new AbortController();
     apiKeyOptionsRequestControllerRef.current = controller;
@@ -1088,7 +1063,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       if (apiKeyOptionsRequestControllerRef.current !== controller) {
         return;
       }
-      setApiKeyOptions(response.options ?? []);
+      // 初始名册请求期间发现的新 Key 不被较早的响应覆盖。
+      setApiKeyOptions(Array.from(new Map([...(response.options ?? []), ...discoveredApiKeys.current.values()].map((option) => [option.id, option])).values()));
       setApiKeyOptionsLoaded(true);
       setApiKeyOptionsResolved(true);
     } catch (error) {
@@ -1182,22 +1158,19 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       const updated = await updateCpaApiKeyAlias(id, keyAlias);
       setApiKeySettings((current) => current.map((item) => (item.id === updated.id ? { ...item, ...updated } : item)));
       setApiKeyOptions((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      patchLocalRankingProfileCache(updated.id, {
-        key_alias: updated.keyAlias,
-        display_name: updated.label,
-      });
       showTopNotice('success', t('usage_stats.api_key_settings_alias_save_success'));
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         onAuthRequired?.();
-        return;
+        throw error;
       }
       setApiKeySettingsError(error instanceof Error ? error.message : 'Failed to update CPA API key alias');
       showTopNotice('error', t('usage_stats.api_key_settings_alias_save_failed'));
+      throw error;
     } finally {
       setApiKeySettingsSavingId(null);
     }
-  }, [onAuthRequired, patchLocalRankingProfileCache, showTopNotice, t]);
+  }, [onAuthRequired, showTopNotice, t]);
 
   const handleRevokeAuthSession = useCallback(async (session: AuthManagedSessionItem) => {
     setAuthSessionRevokingId(session.id);
@@ -1242,47 +1215,56 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }
   }, [onAuthRequired, showTopNotice, t]);
 
-  const loadAnalysis = useCallback(async () => {
+  const loadAnalysis = useCallback(async (replaySpeed = false) => {
     if (!usageRangeQuery.valid || !apiKeyFilterReady) return;
+    const scope = JSON.stringify([usageRangeQuery, requestApiKeyId]);
+    const sameScope = analysisLoadedScopeRef.current === scope;
+    const sameLatencyScope = loadedLatencyScopeRef.current === scope;
     analysisRequestControllerRef.current?.abort();
     const controller = new AbortController();
     analysisRequestControllerRef.current = controller;
 
     setAnalysisLoading(true);
     setAnalysisError('');
-    setAnalysisData(null);
+    if (!sameScope) setAnalysisData(null);
     setAnalysisLatencyLoading(true);
     setAnalysisLatencyError('');
-    setAnalysisLatencyData(null);
+    if (!sameLatencyScope) setAnalysisLatencyData(null);
 
     await loadAnalysisSections({
       loadCore: () => fetchAnalysis(usageRangeQuery, controller.signal, requestApiKeyId),
       loadLatency: () => fetchAnalysisLatency(usageRangeQuery, controller.signal, requestApiKeyId),
       onCoreLoaded: (response) => {
         if (controller.signal.aborted || analysisRequestControllerRef.current !== controller) return;
+        analysisLoadedScopeRef.current = scope;
         setAnalysisData(response);
-        setLoadedAnalysisQueryKey(analysisQueryKey);
+        if (replaySpeed) markChartLoaded(response);
+        const speed = response.model_speed;
+        if (replaySpeed && speed) setAnalysisModelSpeedRefresh((previous) => ({ source: speed, revision: (previous?.revision ?? 0) + 1 }));
         setAnalysisLoading(false);
       },
       onCoreError: (error) => {
         if (controller.signal.aborted || analysisRequestControllerRef.current !== controller) return;
-        setAnalysisData(null);
+        // 同一范围遇到费用维护暂缓时保留已成功显示的金额；换范围则不沿用旧数据。
+        if (!sameScope) setAnalysisData(null);
         setAnalysisLoading(false);
         if (recoverRangeBoundsConflict(error)) return;
         if (error instanceof ApiError && error.status === 401) {
           onAuthRequired?.();
           return;
         }
-        setAnalysisError(t('cost_estimates.load_failed'));
+        setAnalysisError(isCostsBusy(error) ? 'COSTS_BUSY' : t('cost_estimates.load_failed'));
       },
       onLatencyLoaded: (response) => {
         if (analysisRequestControllerRef.current !== controller) return;
+        loadedLatencyScopeRef.current = scope;
         setAnalysisLatencyData(response);
+        if (replaySpeed) markLatencyLoaded(response);
         setAnalysisLatencyLoading(false);
       },
       onLatencyError: (error) => {
         if (controller.signal.aborted || analysisRequestControllerRef.current !== controller) return;
-        setAnalysisLatencyData(null);
+        if (!sameLatencyScope) setAnalysisLatencyData(null);
         setAnalysisLatencyLoading(false);
         if (recoverRangeBoundsConflict(error)) return;
         if (error instanceof ApiError && error.status === 401) {
@@ -1296,7 +1278,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (analysisRequestControllerRef.current === controller) {
       analysisRequestControllerRef.current = null;
     }
-  }, [analysisQueryKey, apiKeyFilterReady, onAuthRequired, recoverRangeBoundsConflict, requestApiKeyId, t, usageRangeQuery]);
+  }, [apiKeyFilterReady, onAuthRequired, recoverRangeBoundsConflict, requestApiKeyId, usageRangeQuery, markChartLoaded, markLatencyLoaded, t]);
 
   useEffect(() => {
     try {
@@ -1481,6 +1463,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
   const loadEvents = useCallback(async (snapshotRecovery = false) => {
     if (!usageRangeQuery.valid || !apiKeyFilterReady) return;
+    const scope = JSON.stringify([usageRangeQuery, requestApiKeyId, eventsModelFilter, eventsSourceFilter, eventsResultFilter]);
+    const sameScope = eventsLoadedScopeRef.current === scope;
     eventsRequestControllerRef.current?.abort();
     eventsLoadMoreRequestControllerRef.current?.abort();
     eventsLoadMoreRequestControllerRef.current = null;
@@ -1494,6 +1478,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     // A recovery is bounded to one first-page fetch; scrolling must not retry it forever.
     setEventsAutoLoadMore(!snapshotRecovery);
     setEventsNextCursor(null);
+    if (!sameScope) {
+      setEventsData([]);
+      setEventsTotalCount(0);
+    }
     try {
       const response = await fetchUsageEvents(usageRangeQuery, controller.signal, {
         pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
@@ -1517,6 +1505,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
         setEventsPage(1);
         return;
       }
+      eventsLoadedScopeRef.current = scope;
       setEventsData(response.events);
       setEventsTotalCount(Math.max(response.total_count, 0));
       setEventsNextCursor(response.has_more === true ? response.next_cursor?.trim() || null : null);
@@ -1525,17 +1514,20 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       if (controller.signal.aborted) {
         return;
       }
+      if (isCostsBusy(error)) setEventsAutoLoadMore(false);
       if (eventsRequestControllerRef.current === controller) {
-        setEventsData([]);
-        setEventsTotalCount(0);
-        setEventsNextCursor(null);
+        if (!isCostsBusy(error) || !sameScope) {
+          setEventsData([]);
+          setEventsTotalCount(0);
+          setEventsNextCursor(null);
+        }
       }
       if (recoverRangeBoundsConflict(error)) return;
       if (error instanceof ApiError && error.status === 401) {
         onAuthRequired?.();
         return;
       }
-      setEventsError(t('cost_estimates.load_failed'));
+      setEventsError(isCostsBusy(error) ? 'COSTS_BUSY' : t('cost_estimates.load_failed'));
     } finally {
       if (eventsRequestControllerRef.current === controller) {
         setEventsLoading(false);
@@ -1758,13 +1750,13 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const currentCredentialDetailSelection = useMemo<CredentialDetailSelection | null>(() => {
     if (!credentialDetailSelection) return null;
     const id = credentialDetailSelection.row.identity.id;
-    if (credentialDetailSelection.kind === 'auth-file') {
-      const row = credentialsData.authFileRows.find((item) => item.identity.id === id);
-      return row ? updateCredentialDetailStats({ kind: 'auth-file', row }, { ...credentialDetailSelection.row.identity, priority: row.identity.priority }) : credentialDetailSelection;
+    if (credentialDetailSelection.kind === 'credential') {
+      const row = credentialsData.credentialRows.find((item) => item.identity.id === id);
+      return row ? updateCredentialDetailStats({ kind: 'credential', row }, { ...credentialDetailSelection.row.identity, priority: row.identity.priority }) : credentialDetailSelection;
     }
     const row = credentialsData.aiProviderRows.find((item) => item.identity.id === id);
     return row ? updateCredentialDetailStats({ kind: 'ai-provider', row }, { ...credentialDetailSelection.row.identity, priority: row.identity.priority }) : credentialDetailSelection;
-  }, [credentialDetailSelection, credentialsData.authFileRows, credentialsData.aiProviderRows]);
+  }, [credentialDetailSelection, credentialsData.credentialRows, credentialsData.aiProviderRows]);
 
   const handleRequestLogDownload = useCallback(async (eventId: string) => {
     if (!requestLogAccessEnabled) return;
@@ -1811,18 +1803,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     return () => { refreshAllPricingCostsRef.current = null; };
   }, [refreshAllPricingCosts]);
 
-  const refreshActiveTab = useCallback(async () => {
+  const refreshActiveTabData = useCallback(async () => {
     if (!apiKeyFilterReady && shouldShowApiKeyFilter(activeTab)) return;
     if (activeTab === 'realtime') {
-      await loadRealtime();
+      await loadRealtime((response) => {
+        setRealtimeChartRefresh((previous) => ({ source: response, revision: (previous?.revision ?? 0) + 1 }));
+      });
       return;
     }
     if (activeTab === 'events') {
       await Promise.all([loadEventFilterOptions(), loadEvents()]);
-      return;
-    }
-    if (activeTab === 'ranking') {
-      await refreshRanking();
       return;
     }
     if (credentialSectionVisibility.enabled) {
@@ -1830,18 +1820,24 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       return;
     }
     if (activeTab === 'analysis') {
-      await loadAnalysis();
+      await loadAnalysis(true);
       return;
     }
     if (activeTab === 'settings') {
       setPricingSettingsRevision((revision) => revision + 1);
-      await Promise.all([loadAuthSessions(), loadApiKeySettings()]);
+      await Promise.all([loadAuthSessions(), loadApiKeySettings(), pricingSettingsRef.current?.refresh()]);
       return;
     }
-    await Promise.all([loadUsage(), loadActivity(), loadComparisons()]);
-  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadComparisons, loadEventFilterOptions, loadEvents, loadRealtime, loadUsage, refreshCredentialDetail, refreshCredentials, refreshRanking]);
+    await Promise.all([loadUsage(markOverviewLoaded), loadActivity(), loadComparisons({ onLoaded: markComparisonsLoaded })]);
+  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadAnalysis, loadApiKeySettings, loadAuthSessions, loadComparisons, loadEventFilterOptions, loadEvents, loadRealtime, loadUsage, refreshCredentialDetail, refreshCredentials, markOverviewLoaded, markComparisonsLoaded]);
+
+  const refreshActiveTab = useCallback(async () => {
+    if (!apiKeyFilterReady && shouldShowApiKeyFilter(activeTab)) return;
+    await Promise.all([refreshActiveTabData(), refreshScopedApiKeys()]);
+  }, [activeTab, apiKeyFilterReady, refreshActiveTabData, refreshScopedApiKeys]);
 
   const refreshAutoRefreshTab = useCallback(async () => {
+    invalidateScopedApiKeys();
     if (!apiKeyFilterReady && shouldShowApiKeyFilter(activeTab)) return;
     if (activeTab === 'realtime') {
       await loadRealtime();
@@ -1856,7 +1852,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       return;
     }
     await Promise.all([loadUsage(), loadActivity({ skipIfInFlight: true }), loadComparisons({ skipIfInFlight: true })]);
-  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadComparisons, loadEvents, loadRealtime, loadUsage, refreshCredentials]);
+  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadComparisons, loadEvents, loadRealtime, loadUsage, refreshCredentials, invalidateScopedApiKeys]);
 
   const handleAutoRefreshError = useCallback((error: unknown) => {
     if (recoverRangeBoundsConflict(error)) return;
@@ -2054,7 +2050,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   // 只有需要时间范围的 tab 才渲染 Range 控件，避免 Credentials/Pricing 产生空白占位。
   const showRangeControls = shouldShowRangeControls(activeTab);
   const showApiKeyFilter = shouldShowApiKeyFilter(activeTab);
-  const showRankingScopeControl = activeTab === 'ranking' && !isEmbeddedInCPAMC;
   const {
     requestsSparkline,
     tokensSparkline,
@@ -2062,7 +2057,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     tpmSparkline,
     cacheReadRateSparkline,
     costSparkline
-  } = useSparklines({ usage, loading });
+  } = useSparklines({ usage: currentOverviewUsage, loading });
 
   const overviewSnapshot = getOverviewPricingSnapshot(currentOverviewUsage);
   const overviewSnapshotMismatch = activeTab === 'overview' && !loading && !comparisonsLoading
@@ -2238,6 +2233,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       <Select
                         value={selectedApiKeyId}
                         options={apiKeySelectOptions}
+                        selectedOption={selectedApiKeyOption}
+                        onOpen={scopedApiKeys.ensureFresh}
                         onChange={setSelectedApiKeyId}
                         className={styles.apiKeySelectControl}
                         ariaLabel={t('usage_stats.api_key_filter')}
@@ -2257,17 +2254,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       </div>
                     </div>
                   </div>
-                  )}
-                  {!isEmbeddedInCPAMC && (
-                    <div
-                      className={`${styles.rankingScopeTransition} ${showRankingScopeControl ? styles.rankingScopeTransitionOpen : ''}`.trim()}
-                      aria-hidden={!showRankingScopeControl}
-                      inert={!showRankingScopeControl}
-                    >
-                      <div className={styles.rankingScopeTransitionInner}>
-                        <RankingScopeSwitch value={rankingScope} onChange={handleRankingScopeChange} />
-                      </div>
-                    </div>
                   )}
                 </div>
                 <div className={styles.usageRefreshSlot}>
@@ -2301,19 +2287,21 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   key="api-key"
                   value={selectedApiKeyId}
                   options={apiKeySelectOptions}
+                  selectedOption={selectedApiKeyOption}
+                  onOpen={scopedApiKeys.ensureFresh}
                   onChange={setSelectedApiKeyId}
-                  ariaLabel={`${t('usage_stats.api_key_filter')}: ${apiKeySelectOptions.find((option) => option.value === selectedApiKeyId)?.label ?? ''}`}
+                  ariaLabel={`${t('usage_stats.api_key_filter')}: ${selectedApiKeyOption.label}`}
                   fullWidth={false}
                   dropdownMinWidth={180}
                   renderValue={(option) => <><span data-dashboard-filter-caption>{t('usage_stats.api_key_filter')}</span><span data-dashboard-filter-value>{option?.label}</span></>}
                 />,
                 ...showRangeControls ? [<TimeRangeControl key="range" value={timeRange} customRange={activeCustomRange} timeZone={rangeTimeZone} maxCustomDayRangeDays={activeTab === 'events' ? REQUEST_EVENTS_CUSTOM_DAY_RANGE_MAX_DAYS : undefined} onChange={handleTimeRangeChange} ariaLabel={t('usage_stats.range_filter')} labelInsideTrigger />] : [],
-              ] : showRankingScopeControl ? [<RankingScopeSwitch key="ranking-scope" value={rankingScope} onChange={handleRankingScopeChange} />] : []}
+              ] : []}
               onRefresh={() => void handleManualRefresh().catch(() => {})}
               refreshing={manualRefreshLoading}
             />}
 
-            {activeTab === 'overview' && (error || comparisonsError) && <div className={styles.errorBox}>{(error || comparisonsError) === 'AUTH_REQUIRED' ? t('auth.session_expired') : t('cost_estimates.load_failed')}</div>}
+            {activeTab === 'overview' && (error || comparisonsError) && <div className={styles.errorBox}>{(error || comparisonsError) === 'AUTH_REQUIRED' ? t('auth.session_expired') : (error || comparisonsError) === 'COSTS_BUSY' ? t('usage_stats.costs_busy') : t('cost_estimates.load_failed')}</div>}
             {activeTab === 'settings' && authSessionsError && <div className={styles.errorBox}>{authSessionsError}</div>}
             {activeTab === 'settings' && apiKeySettingsError && <div className={styles.errorBox}>{apiKeySettingsError}</div>}
             {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (authSessionsError || apiKeySettingsError) : '') && displayStatusError && <div className={styles.errorBox}>{displayStatusError}</div>}
@@ -2329,7 +2317,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
             {activeTab === 'overview' && (
               <>
-                <StatCards
+                <ChartLifecycleProvider queryKey={JSON.stringify([usageRangeQuery, requestApiKeyId])} source={currentOverviewUsage} refreshSignal={overviewChartRefresh}>
+                  <StatCards
                   usage={usage}
                   loading={overviewDisplayLoading}
                   dailyAverageUsage={dailyAverageCardUsage}
@@ -2343,6 +2332,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                     cost: costSparkline
                   }}
                 />
+                </ChartLifecycleProvider>
 
                 <RecentActivityPanel
                   activity={activity}
@@ -2353,13 +2343,18 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   requestIdentity={activityRequestIdentity}
                   onWindowChange={setActivityWindow}
                 />
-                <UsageComparisonCharts isDark={resolvedTheme === 'dark'} isMobile={isMobile} comparisons={overviewComparisons ?? undefined} loading={comparisonsLoading} />
+                <ChartLifecycleProvider queryKey={JSON.stringify([usageRangeQuery, requestApiKeyId])} source={currentOverviewComparisons} refreshSignal={comparisonChartRefresh}>
+                  <UsageComparisonCharts isDark={resolvedTheme === 'dark'} isMobile={isMobile} comparisons={currentOverviewComparisons ?? undefined} loading={comparisonsLoading} />
+                </ChartLifecycleProvider>
               </>
             )}
 
             {activeTab === 'realtime' && (
               <OverviewRealtimePanel
                 realtime={currentRealtime ?? undefined}
+                modelSpeedPreferenceScope={isEmbeddedInCPAMC ? 'admin:embed' : 'admin'}
+                modelSpeedQueryKey={JSON.stringify([realtimeWindow, requestApiKeyId])}
+                chartRefreshSignal={realtimeChartRefresh}
                 loading={realtimeLoading}
                 error={displayRealtimeError}
                 window={realtimeWindow}
@@ -2372,11 +2367,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
             {activeTab === 'analysis' && (
               <>
-                {analysisError && <div className={styles.errorBox}>{analysisError}</div>}
+                {analysisError && <div className={styles.errorBox}>{analysisError === 'COSTS_BUSY' ? t('usage_stats.costs_busy') : analysisError}</div>}
                 <AnalysisPanel
-                  analysis={analysisData}
-                  loading={analysisLoading}
-                  latencyDiagnostics={analysisLatencyData}
+                  analysis={visibleAnalysis}
+                  modelSpeedPreferenceScope={isEmbeddedInCPAMC ? 'admin:embed' : 'admin'}
+                  modelSpeedQueryKey={analysisQueryKey}
+                  modelSpeedRefreshSignal={analysisModelSpeedRefresh}
+                  chartRefreshSignal={chartRefresh}
+                  latencyRefreshSignal={latencyRefresh}
+                  loading={(analysisLoading || analysisError === 'COSTS_BUSY') && !visibleAnalysis}
+                  latencyDiagnostics={loadedLatencyScopeRef.current === JSON.stringify([usageRangeQuery, requestApiKeyId]) ? analysisLatencyData : null}
                   latencyLoading={analysisLatencyLoading}
                   latencyError={analysisLatencyError}
                   isDark={isDark}
@@ -2385,45 +2385,13 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
               </>
             )}
 
-            {activeTab === 'ranking' && (
-              <RankingPage
-                key={rankingScope}
-                scope={rankingScope}
-                period={rankingData.period}
-                metric={rankingData.metric}
-                status={rankingScope === 'community' ? rankingData.status : null}
-                metadata={rankingScope === 'community' ? rankingData.metadata : null}
-                leaderboard={displayedRankingLeaderboard}
-                statusLoading={rankingScope === 'community' && rankingData.statusLoading}
-                metadataLoading={rankingScope === 'community' && rankingData.metadataLoading}
-                leaderboardLoading={rankingScope === 'community' ? rankingData.leaderboardLoading : localRankingData.leaderboardLoading}
-                statusError={rankingScope === 'community' ? rankingData.statusError : null}
-                metadataError={rankingScope === 'community' ? rankingData.metadataError : null}
-                leaderboardError={rankingScope === 'community' ? rankingData.leaderboardError : localRankingData.leaderboardError}
-                action={rankingScope === 'community' ? rankingData.action : null}
-                actionError={rankingScope === 'community' ? rankingData.actionError : null}
-                onClearActionError={rankingData.clearActionError}
-                onJoin={rankingData.join}
-                onSync={rankingData.sync}
-                onPause={rankingData.pause}
-                onResume={rankingData.resume}
-                onExit={rankingData.exit}
-                onRetryStatus={rankingData.refreshStatus}
-                onRetryMetadata={rankingData.refreshMetadata}
-                onRetryLeaderboard={rankingScope === 'community' ? rankingData.refreshLeaderboard : localRankingData.refreshLeaderboard}
-                onUpdateLocalProfile={handleUpdateLocalRankingProfile}
-                onPeriodChange={rankingData.setPeriod}
-                onMetricChange={rankingData.setMetric}
-              />
-            )}
-
             {activeTab === 'events' && (
               <>
-                {eventsError && <div className={styles.errorBox}>{eventsError}</div>}
+                {eventsError && <div className={styles.errorBox}>{eventsError === 'COSTS_BUSY' ? t('usage_stats.costs_busy') : eventsError}</div>}
                 <RequestEventsDetailsCard
-                  events={eventsData}
-                  loading={eventsLoading}
-                  totalCount={eventsTotalCount}
+                  events={visibleEvents}
+                  loading={eventsLoading || (eventsError === 'COSTS_BUSY' && visibleEvents.length === 0)}
+                  totalCount={eventsScopeMatches ? eventsTotalCount : 0}
                   modelOptions={eventsModelOptions}
                   sourceOptions={eventsSourceOptions}
                   modelFilter={eventsModelFilter}
@@ -2464,16 +2432,16 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onChange={setActiveCredentialProviderFilter}
                 />
                 <div className={styles.credentialsSections}>
-                  {credentialSectionVisibility.showAuthFiles && (
-                    <AuthFileCredentialsSection
-                      rows={credentialsData.authFileRows}
+                  {credentialSectionVisibility.showCredentials && (
+                    <CredentialsSection
+                      rows={credentialsData.credentialRows}
                       timeZone={credentialTimeZone}
-                      total={credentialsData.authFileTotal}
-                      page={credentialsData.authFilePage}
-                      totalPages={credentialsData.authFileTotalPages}
-                      pageSize={credentialsData.authFilePageSize}
-                      activeOnly={credentialsData.authFileActiveOnly}
-                      sort={credentialsData.authFileSort}
+                      total={credentialsData.credentialTotal}
+                      page={credentialsData.credentialPage}
+                      totalPages={credentialsData.credentialTotalPages}
+                      pageSize={credentialsData.credentialPageSize}
+                      activeOnly={credentialsData.credentialActiveOnly}
+                      sort={credentialsData.credentialSort}
                       loading={credentialsData.loading}
                       quotaRefreshing={credentialsData.quotaRefreshing}
                       quotaRefreshError={credentialsData.quotaRefreshError}
@@ -2481,19 +2449,19 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                       quotaInspectionLoading={credentialsData.quotaInspectionLoading}
                       quotaInspectionStarting={credentialsData.quotaInspectionStarting}
                       quotaInspectionError={credentialsData.quotaInspectionError}
-                      onPageChange={credentialsData.setAuthFilePage}
-                      onPageSizeChange={credentialsData.setAuthFilePageSize}
-                      onActiveOnlyChange={credentialsData.setAuthFileActiveOnly}
-                      onSortChange={credentialsData.setAuthFileSort}
-                      onRefreshQuota={credentialsData.refreshQuotaForCurrentAuthFilePage}
+                      onPageChange={credentialsData.setCredentialPage}
+                      onPageSizeChange={credentialsData.setCredentialPageSize}
+                      onActiveOnlyChange={credentialsData.setCredentialActiveOnly}
+                      onSortChange={credentialsData.setCredentialSort}
+                      onRefreshQuota={credentialsData.refreshQuotaForCurrentCredentialPage}
                       onRefreshQuotaForAuthIndex={credentialsData.refreshQuotaForAuthIndex}
                       onResetQuotaForAuthIndex={credentialsData.resetQuotaForAuthIndex}
                       editFallbackRef={credentialEditFallbackRef}
-                      onEdit={(row) => setCredentialEditSelection({ kind: 'auth-file', row })}
-                      onOpenDetails={(row) => handleCredentialDetailOpen({ kind: 'auth-file', row })}
+                      onEdit={(row) => setCredentialEditSelection({ kind: 'credential', row })}
+                      onOpenDetails={(row) => handleCredentialDetailOpen({ kind: 'credential', row })}
                       statusPendingIdentityIds={credentialsData.credentialStatusPendingIdentityIds}
-                      onToggleStatus={credentialsData.toggleAuthFileStatus}
-                      onSavePriority={credentialsData.saveAuthFilePriority}
+                      onToggleStatus={credentialsData.toggleCredentialStatus}
+                      onSavePriority={credentialsData.saveCredentialPriority}
                       onRefreshInspectionStatus={credentialsData.refreshQuotaInspectionStatus}
                       onStartInspection={credentialsData.startQuotaInspection}
                       onAfterInvalidAccountAction={credentialsData.refresh}
@@ -2556,6 +2524,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                   onNotice={showTopNotice}
                   refreshRevision={pricingSettingsRevision}
                 />
+                <section aria-label="Stored valuation / 已存估值">
+                  <h2>Stored valuation / 已存估值</h2>
+                  <p>Historical stored estimates are separate from the current matrix and official prices; they are not invoices.</p>
+                  <PricingSettings ref={pricingSettingsRef} timezone={status?.timezone} onAuthRequired={onAuthRequired}
+                    onRecalculationSettled={() => { void credentialsData.refreshAfterRecalculation() }} />
+                </section>
               </div>
             )}
           </div>

@@ -31,7 +31,7 @@ func TestDefaultProviderConfigsContainsAPICallTemplates(t *testing.T) {
 		{configs.Codex, "GET", "https://chatgpt.com/backend-api/wham/usage"},
 		{configs.GeminiCLI, "POST", "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"},
 		{configs.GeminiCLICodeAssist, "POST", "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"},
-		{configs.ClaudeUsage, "GET", "https://api.anthropic.com/api/oauth/usage"},
+		{configs.ClaudeUsage, "GET", "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1"},
 		{configs.ClaudeProfile, "GET", "https://api.anthropic.com/api/oauth/profile"},
 		{configs.Kimi, "GET", "https://api.kimi.com/coding/v1/usages"},
 		{configs.KimiAI, "GET", "https://api.kimi.ai/coding/v1/usages"},
@@ -47,7 +47,7 @@ func TestDefaultProviderConfigsContainsAPICallTemplates(t *testing.T) {
 	}
 
 	for _, config := range append(configs.Antigravity, configs.AntigravitySubscriptions...) {
-		if config.Headers["Content-Type"] != "application/json" || config.Headers["User-Agent"] != "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)" {
+		if config.Headers["Content-Type"] != "application/json" || config.Headers["User-Agent"] != "antigravity/hub/2.23.0 darwin/arm64" {
 			t.Fatalf("unexpected antigravity headers: %+v", config.Headers)
 		}
 	}
@@ -56,7 +56,7 @@ func TestDefaultProviderConfigsContainsAPICallTemplates(t *testing.T) {
 			t.Fatalf("missing JSON content type: %+v", config)
 		}
 	}
-	if configs.Codex.Headers["User-Agent"] != "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal" {
+	if configs.Codex.Headers["User-Agent"] != "Codex Desktop/0.160.1 (Mac OS 27.0.1; arm64) unknown (Codex Desktop; 26.930.61225)" {
 		t.Fatalf("unexpected codex headers: %+v", configs.Codex.Headers)
 	}
 	for _, config := range []quota.APICallConfig{configs.ClaudeUsage, configs.ClaudeProfile} {

@@ -2,9 +2,8 @@ export const USAGE_TAB_OPTIONS = [
   'overview',
   'realtime',
   'analysis',
-  'ranking',
   'events',
-  'auth-files',
+  'credentials',
   'ai-provider',
   'settings',
 ] as const;
@@ -16,9 +15,8 @@ const USAGE_TAB_PATHS: Record<UsageTab, string> = {
   overview: '/overview',
   realtime: '/realtime',
   analysis: '/analysis',
-  ranking: '/ranking',
   events: '/request-events',
-  'auth-files': '/auth-files',
+  'credentials': '/credentials',
   'ai-provider': '/ai-provider',
   settings: '/settings',
 };
@@ -28,7 +26,6 @@ const USAGE_PATH_TABS = new Map<string, UsageTab>(
 );
 
 export const normalizeUsageTabValue = (value: unknown): UsageTab | null => {
-  if (value === 'credentials') return 'auth-files';
   return typeof value === 'string' && USAGE_TAB_OPTIONS.includes(value as UsageTab)
     ? value as UsageTab
     : null;

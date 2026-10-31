@@ -10,11 +10,13 @@ import (
 
 	. "cpa-usage-keeper/internal/api"
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/service"
 	servicedto "cpa-usage-keeper/internal/service/dto"
 )
 
 type pricingStub struct {
+	service.PricingProvider
 	usedModels    []string
 	pricing       []entities.ModelPriceSetting
 	preview       servicedto.PricingSyncPreview
@@ -27,6 +29,63 @@ type pricingStub struct {
 	lastRules     *servicedto.ReplacePricingRulesInput
 	deleted       string
 	err           error
+	recalcOptions servicedto.RecalculationOptions
+	recalcStart   *servicedto.StartRecalculationRequest
+	recalcReply   servicedto.StartRecalculationResponse
+	recalcCurrent *servicedto.RecalculationTask
+	recalcErr     error
+}
+
+func (s *pricingStub) ListPricingModels(context.Context) (servicedto.PricingModelsResponse, error) {
+	return servicedto.PricingModelsResponse{}, s.err
+}
+
+func (s *pricingStub) SavePricingModel(context.Context, pricing.ModelPricingConfig) (servicedto.SavePricingModelResponse, error) {
+	return servicedto.SavePricingModelResponse{}, s.err
+}
+
+func (s *pricingStub) DeletePricingModel(context.Context, string) (servicedto.DeletePricingModelResponse, error) {
+	return servicedto.DeletePricingModelResponse{}, s.err
+}
+
+func (s *pricingStub) FetchPricingSync(context.Context, string) (servicedto.PricingSyncFetchResponse, error) {
+	return servicedto.PricingSyncFetchResponse{}, s.err
+}
+
+func (s *pricingStub) ApplyPricingSync(context.Context, servicedto.PricingSyncApplyRequest) (servicedto.PricingSyncApplyResponse, error) {
+	return servicedto.PricingSyncApplyResponse{}, s.err
+}
+
+func (s *pricingStub) GetPricingRecalculationOptions(context.Context) (servicedto.RecalculationOptions, error) {
+	return s.recalcOptions, s.recalcErr
+}
+
+func (s *pricingStub) StartPricingRecalculation(_ context.Context, input servicedto.StartRecalculationRequest) (servicedto.StartRecalculationResponse, error) {
+	s.recalcStart = &input
+	return s.recalcReply, s.recalcErr
+}
+
+func (s *pricingStub) CurrentPricingRecalculation(context.Context) (*servicedto.RecalculationTask, error) {
+	return s.recalcCurrent, s.recalcErr
+}
+
+func (s *pricingStub) WaitPricingRecalculation() {}
+
+func (s *pricingStub) ListUsedModels(context.Context) ([]string, error) {
+	return s.usedModels, s.err
+}
+
+func TestPricingRouterRegistersOnlyCompleteContract(t *testing.T) {
+	router := NewRouter(nil, nil, nil, &pricingStub{}, AuthConfig{}, nil, "", OptionalProviders{StoredPricing: &pricingStub{}})
+	registered := make(map[string]bool)
+	for _, route := range router.Routes() {
+		registered[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{"GET /api/v1/pricing", "GET /api/v1/models/used", "GET /api/v1/pricing/stored/models", "PUT /api/v1/pricing/stored/models"} {
+		if !registered[route] {
+			t.Errorf("pricing route %s is missing", route)
+		}
+	}
 }
 
 type pricingTimeoutError struct{}
@@ -35,15 +94,11 @@ func (pricingTimeoutError) Error() string   { return "net/http: TLS handshake ti
 func (pricingTimeoutError) Timeout() bool   { return true }
 func (pricingTimeoutError) Temporary() bool { return true }
 
-func (s pricingStub) ListUsedModels(context.Context) ([]string, error) {
-	return s.usedModels, s.err
-}
-
-func (s pricingStub) ListPricing(context.Context) ([]entities.ModelPriceSetting, error) {
+func (s *pricingStub) ListPricing(context.Context) ([]entities.ModelPriceSetting, error) {
 	return s.pricing, s.err
 }
 
-func (s pricingStub) PreviewPricingSync(_ context.Context, source string) (servicedto.PricingSyncPreview, error) {
+func (s *pricingStub) PreviewPricingSync(_ context.Context, source string) (servicedto.PricingSyncPreview, error) {
 	if s.previewSource != nil {
 		*s.previewSource = source
 	}

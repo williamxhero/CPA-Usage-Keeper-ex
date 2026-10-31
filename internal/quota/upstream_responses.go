@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"cpa-usage-keeper/internal/cpa/dto/apicall"
-	"cpa-usage-keeper/internal/cpa/dto/authfiles"
+	"cpa-usage-keeper/internal/cpa/dto/credentials"
 )
 
 // UpstreamResponse 是 CPA api-call 返回的上游响应快照；刻意不保存任何请求 Header。
@@ -79,7 +79,7 @@ func (c upstreamResponseRecordingCaller) CallManagementAPI(ctx context.Context, 
 	return response, err
 }
 
-func (c upstreamResponseRecordingCaller) FetchKimiCredentialMetadata(ctx context.Context, name string) (*authfiles.KimiCredentialMetadata, error) {
+func (c upstreamResponseRecordingCaller) FetchKimiCredentialMetadata(ctx context.Context, name string) (*credentials.KimiCredentialMetadata, error) {
 	reader, ok := c.ManagementClient.(kimiCredentialReader)
 	if !ok {
 		return nil, fmt.Errorf("Kimi credential metadata reader is unavailable")
@@ -97,7 +97,8 @@ func upstreamResponseBody(response *apicall.Response) string {
 		return ""
 	}
 	if raw := bytes.TrimSpace(response.Body); len(raw) > 0 && !bytes.Equal(raw, []byte("null")) {
-		// CPA 当前把原始 body 放在 JSON string 中；旧兼容响应也可能直接放 object/array。
+		// CPA 响应正文在传输层是 JSON 字符串，这里先解出其文本供诊断展示。
+		// 内部调用方也可直接构造 RawMessage 正文，此时保留原文；这不是 HTTP 解码的兼容分支。
 		var text string
 		if err := json.Unmarshal(raw, &text); err == nil {
 			return text

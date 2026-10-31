@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/benchmark/capacity"
+	"cpa-usage-keeper/internal/service"
 	"cpa-usage-keeper/internal/service/tokenprocessor"
 )
 
@@ -20,6 +21,9 @@ func TestBuildUsagePayloadUsesValidSyntheticMetadata(t *testing.T) {
 	payload, metadata, err := capacity.BuildUsagePayload(17, time.Date(2026, 8, 6, 15, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60)), capacity.Cardinality{Identities: 1000, Models: 100, APIKeys: 100}, profiles, 9)
 	if err != nil {
 		t.Fatalf("BuildUsagePayload returned error: %v", err)
+	}
+	if _, _, err := service.DecodeRedisUsageMessage(string(payload), time.Now()); err != nil {
+		t.Fatalf("probe payload rejected by production decoder: %v", err)
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal(payload, &decoded); err != nil {

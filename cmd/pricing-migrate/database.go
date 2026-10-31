@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"cpa-usage-keeper/internal/entities"
-	"cpa-usage-keeper/internal/repository"
+	"cpa-usage-keeper/internal/helper"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -34,7 +34,7 @@ func openMigrationDatabase(ctx context.Context, filename string, readOnly bool) 
 	}
 	// mode=rw prevents a missing file from being created even if it disappears
 	// after Stat. URI construction escapes filename characters such as # and %.
-	dsn := repository.BuildSQLiteFileURI(absolute) + "?mode=" + mode + "&cache=private&_busy_timeout=15000&_foreign_keys=on"
+	dsn := helper.BuildSQLiteFileURI(absolute) + "?mode=" + mode + "&cache=private&_busy_timeout=15000&_foreign_keys=on"
 	if readOnly {
 		dsn += "&_query_only=on"
 	}

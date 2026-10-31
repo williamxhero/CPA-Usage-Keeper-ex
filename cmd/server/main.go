@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"cpa-usage-keeper/internal/app"
 	"cpa-usage-keeper/internal/logging"
@@ -16,6 +19,7 @@ func main() {
 
 	envFile := flag.String("env", "", "path to env file")
 	appHost := flag.String("host", "", "listen host (overrides APP_HOST)")
+	upgradeStoredPricing := flag.Bool("upgrade-stored-pricing", false, "explicitly back up and upgrade legacy stored fees before serving; never enabled by ordinary startup")
 	var showVersion bool
 	flag.BoolVar(&showVersion, "v", false, "print version and exit")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
@@ -27,14 +31,20 @@ func main() {
 
 	application, err := app.NewWithOptions(app.Options{EnvFile: *envFile, AppHost: *appHost})
 	if err != nil {
-		if app.IsInitializationErrorLogged(err) {
-			os.Exit(1)
-		}
 		logrus.WithError(err).Fatal("initialize app")
 	}
 	defer application.Close()
+	// 应用生命周期独立于任何 HTTP 请求；退出时先取消重算和后台任务，再由 Close 回收数据库。
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-	if err := application.Run(); err != nil {
+	var runErr error
+	if *upgradeStoredPricing {
+		runErr = application.RunStoredPricingUpgradeContext(ctx)
+	} else {
+		runErr = application.RunContext(ctx)
+	}
+	if err := runErr; err != nil {
 		logging.LogTerminalError("run app", err)
 		if closeErr := application.Close(); closeErr != nil {
 			logrus.WithError(closeErr).Error("close app")

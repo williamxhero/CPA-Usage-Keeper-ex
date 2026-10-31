@@ -31,7 +31,7 @@ vi.mock('../pages/LoginPage', () => ({
 }));
 vi.mock('../pages/KeyOverviewPage', () => ({
   KeyOverviewPage: ({ onNavigate }: ComponentProps<typeof import('../pages/KeyOverviewPage').KeyOverviewPage>) => (
-    <button data-navigate onClick={() => onNavigate('/key-ranking')}>Overview</button>
+    <button data-navigate onClick={() => onNavigate('/key-analysis')}>Overview</button>
   ),
 }));
 vi.mock('../pages/KeyAnalysisPage', () => ({ KeyAnalysisPage: () => <div>Analysis</div> }));
@@ -80,20 +80,20 @@ describe('App session and navigation', () => {
   });
 
   it('preserves the embed query through session normalization and viewer navigation', async () => {
-    window.history.replaceState(null, '', '/cpa/auth-files?embed=cpamc');
+    window.history.replaceState(null, '', '/cpa/credentials?embed=cpamc');
     api.getSession.mockResolvedValue({ authenticated: true, role: 'api_key_viewer' });
     const historyLength = window.history.length;
     await act(async () => root.render(<App />));
     expect(window.location.pathname + window.location.search).toBe('/cpa/key-overview?embed=cpamc');
     expect(container.querySelector('.app-frame')!.getAttribute('data-embed')).toBe('cpamc');
     await act(async () => container.querySelector<HTMLButtonElement>('[data-navigate]')!.click());
-    expect(container.textContent).toContain('Ranking');
-    expect(window.location.pathname + window.location.search).toBe('/cpa/key-ranking?embed=cpamc');
+    expect(container.textContent).toContain('Analysis');
+    expect(window.location.pathname + window.location.search).toBe('/cpa/key-analysis?embed=cpamc');
     expect(window.history.length).toBe(historyLength);
   });
 
   it.each([
-    { role: 'admin', path: '/auth-files', button: '[data-password-login]', page: 'Admin' },
+    { role: 'admin', path: '/credentials', button: '[data-password-login]', page: 'Admin' },
     { role: 'admin', path: '/analysis', button: '[data-password-login]', page: 'Admin' },
     { role: 'api_key_viewer', path: '/key-analysis', button: '[data-key-login]', page: 'Analysis' },
   ])('preserves the allowed path after $role login', async ({ role, path, button, page }) => {
@@ -105,7 +105,7 @@ describe('App session and navigation', () => {
     expect(window.location.pathname + window.location.search).toBe(`/cpa${path}?embed=cpamc`);
   });
 
-  it.each(['/auth-files', '/ai-provider'])('preserves provider links through password login at %s', async (path) => {
+  it.each(['/credentials', '/ai-provider'])('preserves provider links through password login at %s', async (path) => {
     window.history.replaceState(null, '', `/cpa${path}?embed=cpamc&provider=codex&other=keep#details`);
     api.getSession.mockResolvedValueOnce({ authenticated: false }).mockResolvedValueOnce({ authenticated: true, role: 'admin' });
     await act(async () => root.render(<App />));
@@ -114,7 +114,7 @@ describe('App session and navigation', () => {
   });
 
   it('drops administrator provider state when logging in as an API key viewer', async () => {
-    window.history.replaceState(null, '', '/cpa/auth-files?embed=cpamc&provider=codex');
+    window.history.replaceState(null, '', '/cpa/credentials?embed=cpamc&provider=codex');
     api.getSession.mockResolvedValueOnce({ authenticated: false }).mockResolvedValueOnce({ authenticated: true, role: 'api_key_viewer' });
     await act(async () => root.render(<App />));
     await act(async () => container.querySelector<HTMLButtonElement>('[data-key-login]')!.click());

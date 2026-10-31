@@ -52,7 +52,7 @@ func (f RuleField) String() string {
 	return ruleFieldNames[f]
 }
 
-// ActiveFields 是编译后的字段位图，仅包含确实会改变价格的规则字段。
+// ActiveFields identifies the rule dimensions required by fork price reads.
 type ActiveFields uint16
 
 func (f ActiveFields) Has(field RuleField) bool {

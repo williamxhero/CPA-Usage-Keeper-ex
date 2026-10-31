@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('react-chartjs-2', () => ({
   Bar: () => React.createElement('div'),
   Doughnut: () => React.createElement('div'),
-  Scatter: () => React.createElement('div'),
+  Scatter: () => React.createElement('canvas', { 'data-latency-chart': true }),
 }));
 
 vi.mock('react-i18next', () => ({
@@ -50,4 +50,14 @@ describe('AnalysisPanel latency loading boundary', () => {
     expect(latencyCard(container).textContent).toContain('usage_stats.analysis_latency_recent_range_only');
     expect(latencyCard(container).textContent).not.toContain('usage_stats.no_data');
   });
+  it.each([{ latencyLoading: true }, { latencyError: 'refresh failed' }])('preserves existing latency data during refresh or failure: %o', (state) => {
+    const container = renderAnalysisPanel({ ...state, latencyDiagnostics: {
+      supported: true, points: [{ ttft_ms: 100, latency_ms: 1000 }], density: [], total_points: 1,
+      sampled: false, p95_ttft_ms: 100, p95_latency_ms: 1000, max_ttft_ms: 100, max_latency_ms: 1000,
+    } });
+    expect(latencyCard(container).querySelector('canvas')).not.toBeNull();
+    expect(latencyCard(container).textContent).not.toContain('common.loading');
+    if (state.latencyError) expect(latencyCard(container).textContent).toContain(state.latencyError);
+  });
+
 });

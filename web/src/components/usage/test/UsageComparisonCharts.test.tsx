@@ -18,7 +18,7 @@ const item = (key: string, overrides: Partial<UsageComparisonItem> = {}): UsageC
 });
 const comparisons = (items = [item('model-a')]): UsageOverviewComparisons => ({
   buckets:['2026-09-18','2026-09-19','2026-09-20'],granularity:'daily',timezone:'Asia/Shanghai',
-  models:items,api_keys:[item('My Key')],auth_files:[item('auth.json')],ai_providers:[item('OpenAI')],
+  models:items,api_keys:[item('My Key')],credentials:[item('auth.json')],ai_providers:[item('OpenAI')],
 });
 beforeEach(async () => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -37,7 +37,7 @@ it('renders a single stacked area chart with all four dimensions and zero-filled
   expect(chart.data?.datasets[0].data).toEqual([40,0,60]);
   expect(chart.data?.datasets[0]).toMatchObject({fill:'origin',borderWidth:0,pointRadius:0,cubicInterpolationMode:'monotone'});
   expect(chart.options?.scales?.y?.stacked).toBe(true);
-  for(const [dimension,label] of [['api_keys','My Key'],['auth_files','auth.json'],['ai_providers','OpenAI'],['models','model-a']]){
+  for(const [dimension,label] of [['api_keys','My Key'],['credentials','auth.json'],['ai_providers','OpenAI'],['models','model-a']]){
     await click('[data-dimension="'+dimension+'"]');
     expect(chart.data?.datasets[0].label).toBe(label);
     expect(container.querySelector('[data-dimension="'+dimension+'"]')?.getAttribute('aria-pressed')).toBe('true');
@@ -51,20 +51,44 @@ it('aggregates Others at each time bucket and retains every total and unknown pr
   expect(view.rows.reduce((n,r)=>n+(r.share??0),0)).toBeCloseTo(100);
   for(let i=0;i<3;i++) expect(view.rows.reduce((n,r)=>n+(r.token_series?.[i]??0),0)).toBe(items.reduce((n,r)=>n+r.token_series![i],0));
 });
-it('shows the same ranked series in chart, legend and interval summaries',async()=>{
+it('uses interval summaries as the only legend for ranked chart series',async()=>{
   await render(comparisons(Array.from({length:7},(_,i)=>item('m'+i,{total_tokens:100-i}))));
   expect(chart.data?.datasets).toHaveLength(6);
   expect(container.querySelectorAll('[data-series-key]')).toHaveLength(6);
   expect(container.querySelectorAll('[data-comparison-entry]')).toHaveLength(6);
+  expect(container.querySelectorAll('[data-series-key]:not([data-comparison-entry])')).toHaveLength(0);
   expect(container.querySelector('[data-comparison-entry="__comparison_others__"]')).not.toBeNull();
 });
 it('toggles a series without changing range totals and resets visibility on dimension switch',async()=>{
   await render();
-  await click('[data-series-key="model-a"]');
+  await click('[data-comparison-entry="model-a"]');
   expect(chart.data?.datasets[0].hidden).toBe(true);
   expect(container.querySelector('[data-comparison-total]')?.textContent).toContain('100');
+  expect(container.querySelector('[data-comparison-entry]')?.textContent).toContain('100');
+  expect(container.querySelector('[data-comparison-entry]')?.getAttribute('aria-pressed')).toBe('false');
+  await click('[data-comparison-entry="model-a"]');
+  expect(chart.data?.datasets[0].hidden).toBe(false);
+  await click('[data-comparison-entry="model-a"]');
   await click('[data-dimension="api_keys"]');
   expect(chart.data?.datasets[0].hidden).toBe(false);
+});
+it('keeps details readable on repeated clicks without focus and clears them on data changes',async()=>{
+  const data = comparisons([item('model-a')]);
+  await render(data);
+  for (const hidden of [true, false]) {
+    await click('[data-comparison-entry="model-a"]');
+    expect(chart.data?.datasets[0].hidden).toBe(hidden);
+    expect(document.querySelector('[role="tooltip"]:not([hidden])')?.textContent).toContain('Requests: 10');
+  }
+  await act(async()=>container.querySelector('[data-comparison-entry]')!.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})));
+  expect(document.querySelector('[role="tooltip"]:not([hidden])')).toBeNull();
+  await click('[data-comparison-entry="model-a"]');
+  expect(document.querySelector('[role="tooltip"]:not([hidden])')).not.toBeNull();
+  await render({...data,buckets:['2026-09-21']});
+  expect(document.querySelector('[role="tooltip"]:not([hidden])')).toBeNull();
+  await click('[data-comparison-entry="model-a"]');
+  await click('[data-dimension="api_keys"]');
+  expect(document.querySelector('[role="tooltip"]:not([hidden])')).toBeNull();
 });
 it('preserves detailed metrics on focus and updates summaries on polling',async()=>{
   await render(comparisons([item('model-a',{cost:null})]));
@@ -90,7 +114,7 @@ it('keeps same-label identities separate when polling changes their ranking',asy
 it('limits Key Viewer to models and its own API Key even if restricted arrays are supplied',async()=>{
   await render(comparisons(),true);
   expect(container.querySelectorAll('[data-dimension]')).toHaveLength(2);
-  expect(container.querySelector('[data-dimension="auth_files"]')).toBeNull();
+  expect(container.querySelector('[data-dimension="credentials"]')).toBeNull();
   expect(container.querySelector('[data-dimension="ai_providers"]')).toBeNull();
   await click('[data-dimension="api_keys"]');
   expect(chart.data?.datasets[0].label).toBe('My Key');

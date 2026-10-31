@@ -8,6 +8,7 @@ import (
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/poller"
+	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 	"cpa-usage-keeper/internal/service"
 	servicedto "cpa-usage-keeper/internal/service/dto"
@@ -83,6 +84,7 @@ func benchmarkRedisUsageInboxProcessing(b *testing.B, rowCount, identityCount in
 		// 使用生产 notifier 的同步内存路径，但不启动后台聚合 goroutine，隔离 ingestion 自身成本。
 		aggregationRunner := poller.NewUsageAggregationRunner(db)
 		syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
+			PricingCatalog:           pricing.NewCatalog(pricing.EmptySnapshot()),
 			Now:                      func() time.Time { return time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC) },
 			UsageAggregationNotifier: aggregationRunner,
 		})
@@ -148,8 +150,8 @@ func seedRedisProcessBenchmarkIdentities(b *testing.B, db *gorm.DB, identityCoun
 		identity := redisProcessBenchmarkAuthIndex(i)
 		identities = append(identities, entities.UsageIdentity{
 			Name:         identity,
-			AuthType:     entities.UsageIdentityAuthTypeAuthFile,
-			AuthTypeName: "auth_file",
+			AuthType:     entities.UsageIdentityAuthTypeCredential,
+			AuthTypeName: "oauth",
 			Identity:     identity,
 			Type:         "codex",
 			Provider:     "codex",
@@ -179,7 +181,7 @@ func redisProcessBenchmarkMessage(i, identityCount int, base time.Time) string {
 	authIndex := redisProcessBenchmarkAuthIndex(i % identityCount)
 	timestamp := base.Add(time.Duration(i) * time.Millisecond).Format(time.RFC3339Nano)
 	return fmt.Sprintf(
-		`{"timestamp":%q,"latency_ms":120,"source":"redis","auth_index":%q,"tokens":{"input_tokens":120,"output_tokens":48,"reasoning_tokens":8,"cached_tokens":16,"cache_read_tokens":4,"cache_creation_tokens":2,"total_tokens":168},"provider":"codex","model":"gpt-5","auth_type":"oauth","api_key":"bench-group","request_id":%q}`,
+		`{"timestamp":%q,"latency_ms":120,"source":"redis","auth_index":%q,"tokens":{"input_tokens":120,"output_tokens":48,"reasoning_tokens":8,"cached_tokens":16,"cache_read_tokens":4,"cache_creation_tokens":2,"total_tokens":168},"provider":"codex","model":"gpt-5","auth_type":"oauth","api_key":"bench-group","execution_id":"fixture-execution","request_id":%q}`,
 		timestamp,
 		authIndex,
 		fmt.Sprintf("bench-%08d", i),

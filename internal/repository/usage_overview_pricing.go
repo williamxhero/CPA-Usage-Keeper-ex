@@ -83,9 +83,7 @@ func loadUsageOverviewStatProjection(query *gorm.DB, filter dto.UsageQueryFilter
 	dimensionColumns := UsagePricingDimensionColumns(activeFields)
 	dimensionColumns = append([]string{"bucket_start"}, dimensionColumns...)
 	selectColumns := strings.Join(dimensionColumns, ", ") + ", " + usageOverviewStatProjectionAggregateColumns
-	query = query.
-		Select(selectColumns).
-		Where("bucket_start >= ? AND bucket_start < ?", timeutil.FormatStorageTime(start), timeutil.FormatStorageTime(end))
+	query = overviewBucketRead(start, end, grain).query(query.Select(selectColumns))
 	if apiGroupKey := strings.TrimSpace(filter.APIGroupKey); apiGroupKey != "" {
 		query = query.Where("api_group_key = ?", apiGroupKey)
 	}
@@ -136,6 +134,10 @@ func loadUsageOverviewComparisonProjection(query *gorm.DB, filter dto.UsageQuery
 	}
 	where := "bucket_start >= ? AND bucket_start < ?"
 	args := []any{timeutil.FormatStorageTime(start), timeutil.FormatStorageTime(end)}
+	if read := overviewBucketRead(start, end, grain); !read.stableOffset {
+		where = "bucket_start IN ?"
+		args = []any{read.keys}
+	}
 	if key := strings.TrimSpace(filter.APIGroupKey); key != "" {
 		where += " AND api_group_key = ?"
 		args = append(args, key)

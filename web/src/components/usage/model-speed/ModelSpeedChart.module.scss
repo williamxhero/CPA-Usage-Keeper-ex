@@ -1,0 +1,149 @@
+.card { container: model-speed / inline-size; }
+
+.header:global(.keeper-card-heading) {
+  flex-direction: row;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+
+  > div { min-width: 0; }
+}
+
+.body {
+  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.chart {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 280px;
+
+  canvas { touch-action: pan-x pan-y !important; }
+}
+
+.empty {
+  flex: 1;
+}
+
+.legend {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px 12px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+
+  .legendItem {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr) max-content;
+    max-width: none;
+  }
+}
+
+.interactiveLegendItem { min-width: 0; }
+
+.legend .legendButton {
+  width: 100%;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 180ms ease, border-color 180ms ease, opacity 180ms ease;
+
+  > span:first-child { transition: transform 180ms ease; }
+
+  &[data-highlighted] {
+    background-color: color-mix(in srgb, var(--text-primary) 7%, var(--bg-primary));
+    border-color: var(--text-secondary);
+    > span:first-child { transform: scale(1.2); }
+  }
+
+  &[data-muted] { opacity: 0.45; }
+  &:focus-visible { outline: 2px solid var(--text-secondary); outline-offset: 2px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
+    > span:first-child { transition: none; }
+  }
+}
+
+.legendValue { color: var(--text-primary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+@container model-speed (min-width: 420px) {
+  .legend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.tooltip {
+  position: absolute;
+  // 模型选择菜单沿用 Select 的层级；速度 Tooltip 在它下方，并在打开菜单时隐藏。
+  z-index: 2000;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: max-content;
+  border-style: solid;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.tooltipTitle { font-weight: 700; }
+
+.tooltipRows {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+
+  li { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 6px; }
+}
+
+.tooltipDot { width: 8px; height: 8px; margin-top: 3px; border-radius: 50%; }
+.tooltipValue { font-weight: 800; }
+.tooltipSecondary { font-size: 11px; }
+.tooltipRowHighlighted {
+  margin-inline: -6px;
+  padding-inline: 6px;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.realtimeHeader:global(.keeper-card-heading) {
+  margin-bottom: 0;
+  align-items: center;
+}
+
+.realtimeBody {
+  min-height: 272px;
+
+  .chart { min-height: 180px; }
+}
+
+.phases {
+  display: flex;
+  gap: 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+
+  > span { display: inline-flex; align-items: center; gap: 6px; }
+}
+
+.phaseDot {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+}
+
+.phaseFilled { background: currentColor; }

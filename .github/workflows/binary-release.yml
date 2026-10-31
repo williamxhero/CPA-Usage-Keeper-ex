@@ -1,16 +1,23 @@
 name: Publish release binaries
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_call:
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: true
 
 permissions:
   contents: write
 
 jobs:
+  release-policy:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-policy.yml
+
   binary-release-linux:
-    runs-on: ubuntu-24.04
+    needs: release-policy
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -30,7 +37,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
           cache: true
 
@@ -38,6 +45,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -66,6 +74,7 @@ jobs:
           CGO_ENABLED=1 GOOS="${GOOS}" GOARCH="${GOARCH}" CC="${CC}" \
             go build -trimpath -ldflags="-s -w -X cpa-usage-keeper/internal/version.Version=${VERSION}" -o "${package_dir}/cpa-usage-keeper" ./cmd/server/main.go
           cp .env.example README.md README.zh.md LICENSE "${package_dir}/"
+          cp -R docs "${package_dir}/"
           cp deploy/cpa-usage-keeper.example.service "${package_dir}/cpa-usage-keeper.service"
           tar -czf "dist/${package_name}.tar.gz" -C dist "${package_name}"
 
@@ -77,6 +86,7 @@ jobs:
           if-no-files-found: error
 
   binary-release-darwin:
+    needs: release-policy
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
@@ -97,7 +107,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
           cache: true
 
@@ -105,6 +115,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -129,6 +140,7 @@ jobs:
           CGO_ENABLED=1 GOOS="${GOOS}" GOARCH="${GOARCH}" \
             go build -trimpath -ldflags="-s -w -X cpa-usage-keeper/internal/version.Version=${VERSION}" -o "${package_dir}/cpa-usage-keeper" ./cmd/server/main.go
           cp .env.example README.md README.zh.md LICENSE "${package_dir}/"
+          cp -R docs "${package_dir}/"
           tar -czf "dist/${package_name}.tar.gz" -C dist "${package_name}"
 
       - name: Upload binary package artifact
@@ -139,6 +151,7 @@ jobs:
           if-no-files-found: error
 
   binary-release-windows:
+    needs: release-policy
     runs-on: ${{ matrix.runs_on }}
     strategy:
       fail-fast: false
@@ -163,7 +176,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.x'
           check-latest: true
           cache: true
 
@@ -171,6 +184,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '24'
+          check-latest: true
           cache: npm
           cache-dependency-path: web/package-lock.json
 
@@ -207,6 +221,7 @@ jobs:
           CGO_ENABLED=1 GOOS="${GOOS}" GOARCH="${GOARCH}" CC="${CC}" \
             go build -trimpath -ldflags="-s -w -X cpa-usage-keeper/internal/version.Version=${VERSION}" -o "${package_dir}/cpa-usage-keeper.exe" ./cmd/server/main.go
           cp .env.example README.md README.zh.md LICENSE "${package_dir}/"
+          cp -R docs "${package_dir}/"
 
       - name: Archive binary package
         shell: pwsh
@@ -225,15 +240,17 @@ jobs:
           if-no-files-found: error
 
   publish-release:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs:
+      - release-policy
       - binary-release-linux
       - binary-release-darwin
       - binary-release-windows
     steps:
       - name: Download binary package artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
+          pattern: cpa-usage-keeper-${{ github.ref_name }}-*
           path: dist
           merge-multiple: true
 
@@ -243,21 +260,35 @@ jobs:
           cd dist
           sha256sum *.tar.gz *.zip > checksums.txt
 
+      - name: Generate release version file
+        id: version_file
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_TAG" =~ ^v2\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf '%s\n' "$RELEASE_TAG" > dist/version.txt
+            echo 'path=dist/version.txt' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v3
         with:
+          make_latest: ${{ needs.release-policy.outputs.latest }}
           files: |
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+            ${{ steps.version_file.outputs.path }}
 
   update-homebrew-tap:
-    runs-on: ubuntu-24.04
-    needs: publish-release
+    runs-on: ubuntu-26.04
+    needs: [release-policy, publish-release]
     steps:
       - name: Download binary package artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
+          pattern: cpa-usage-keeper-${{ github.ref_name }}-*
           path: dist
           merge-multiple: true
 
@@ -293,12 +324,14 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: Willxup/homebrew-cpa-usage-keeper
+          ref: main
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
       - name: Update formula
         shell: bash
         env:
+          FORMULA: ${{ needs.release-policy.outputs.formula }}
           TAG: ${{ steps.formula.outputs.tag }}
           VERSION: ${{ steps.formula.outputs.version }}
           ARM_FILE: ${{ steps.formula.outputs.arm_file }}
@@ -307,85 +340,61 @@ jobs:
           AMD_SHA: ${{ steps.formula.outputs.amd_sha }}
         run: |
           set -euo pipefail
-          mkdir -p homebrew-tap/Formula
+          # Preserve the tap's installation, service and configuration settings.
+          # Only the selected formula's release metadata is updated.
+          python3 - <<'PYTHON'
+          import os
+          import re
+          from pathlib import Path
 
-          cat > homebrew-tap/Formula/cpa-usage-keeper.rb <<EOF
-          class CpaUsageKeeper < Formula
-            desc "Standalone CPA usage persistence and dashboard service"
-            homepage "https://github.com/Willxup/cpa-usage-keeper"
-            license "MIT"
-            version "${VERSION}"
+          version = os.environ["VERSION"]
+          tag = os.environ["TAG"]
+          formula = os.environ["FORMULA"]
+          if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version) or tag != f"v{version}":
+              raise SystemExit("Invalid stable release version")
+          expected_formula = "cpa-usage-keeper@1" if version.split(".")[0] == "1" else "cpa-usage-keeper"
+          if formula != expected_formula:
+              raise SystemExit("Formula does not match the release major version")
 
-            depends_on :macos
+          path = Path("homebrew-tap/Formula") / f"{formula}.rb"
+          content = path.read_text()
+          content, count = re.subn(r'(?m)^([ \t]*version ")[^"]+("[ \t]*)$', lambda m: f'{m[1]}{version}{m[2]}', content)
+          if count != 1:
+              raise SystemExit("Expected exactly one formula version")
 
-            on_macos do
-              on_arm do
-                url "https://github.com/Willxup/cpa-usage-keeper/releases/download/${TAG}/${ARM_FILE}"
-                sha256 "${ARM_SHA}"
-              end
+          for arch, prefix in (("arm64", "ARM"), ("amd64", "AMD")):
+              filename = os.environ[f"{prefix}_FILE"]
+              checksum = os.environ[f"{prefix}_SHA"]
+              if filename != f"cpa-usage-keeper_{tag}_darwin_{arch}.tar.gz" or not re.fullmatch(r"[0-9a-f]{64}", checksum):
+                  raise SystemExit(f"Invalid {arch} release metadata")
+              url = f"https://github.com/Willxup/cpa-usage-keeper/releases/download/{tag}/{filename}"
+              pattern = (
+                  r'(?m)^([ \t]*url ")https://github\.com/Willxup/cpa-usage-keeper/releases/download/'
+                  rf'[^/"\n]+/cpa-usage-keeper_[^/"\n]+_darwin_{arch}\.tar\.gz'
+                  r'("[ \t]*\n[ \t]*sha256 ")[0-9a-f]{64}("[ \t]*)$'
+              )
+              content, count = re.subn(pattern, lambda m: f'{m[1]}{url}{m[2]}{checksum}{m[3]}', content)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one {arch} URL and checksum")
 
-              on_intel do
-                url "https://github.com/Willxup/cpa-usage-keeper/releases/download/${TAG}/${AMD_FILE}"
-                sha256 "${AMD_SHA}"
-              end
-            end
-
-            def install
-              inreplace ".env.example", "WORK_DIR=./data", "WORK_DIR=#{var}/cpa-usage-keeper"
-
-              bin.install "cpa-usage-keeper"
-              etc.install ".env.example" => "cpa-usage-keeper.env.example"
-              pkgshare.install "README.md", "README.zh.md", "LICENSE"
-            end
-
-            def post_install
-              (var/"cpa-usage-keeper").mkpath
-
-              env_file = etc/"cpa-usage-keeper.env"
-              cp etc/"cpa-usage-keeper.env.example", env_file unless env_file.exist?
-            end
-
-            service do
-              run [opt_bin/"cpa-usage-keeper", "--env", etc/"cpa-usage-keeper.env"]
-              working_dir var/"cpa-usage-keeper"
-              keep_alive true
-              log_path var/"log/cpa-usage-keeper.log"
-              error_log_path var/"log/cpa-usage-keeper.err.log"
-            end
-
-            def caveats
-              <<~EOS
-                Edit the configuration before starting the service:
-
-                  #{etc}/cpa-usage-keeper.env
-
-                Required values include CPA_BASE_URL and CPA_MANAGEMENT_KEY. LOGIN_PASSWORD is also required unless authentication is explicitly disabled.
-
-                Start the service with:
-
-                  brew services start cpa-usage-keeper
-              EOS
-            end
-
-            test do
-              assert_match "Usage of", shell_output("#{bin}/cpa-usage-keeper --help 2>&1")
-            end
-          end
-          EOF
+          path.write_text(content, encoding="utf-8", newline="\n")
+          PYTHON
 
       - name: Commit and push tap update
         shell: bash
         working-directory: homebrew-tap
+        env:
+          FORMULA: ${{ needs.release-policy.outputs.formula }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add Formula/cpa-usage-keeper.rb
+          git add "Formula/${FORMULA}.rb"
           if git diff --cached --quiet; then
             echo "Homebrew formula already up to date"
             exit 0
           fi
 
-          git commit -m "Update cpa-usage-keeper to ${GITHUB_REF_NAME}"
-          git push
+          git commit -m "Update ${FORMULA} to ${GITHUB_REF_NAME}"
+          git push origin HEAD:main

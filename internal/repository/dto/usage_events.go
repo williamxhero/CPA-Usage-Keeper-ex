@@ -40,6 +40,7 @@ type UsageEventRecord struct {
 	ResponseModel           string
 	ReasoningEffort         string
 	ServiceTier             string
+	EffectiveServiceTier    string
 	ResponseServiceTier     string
 	ClientIP                *string
 	XForwardedFor           *string

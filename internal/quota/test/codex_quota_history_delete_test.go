@@ -46,9 +46,9 @@ func TestDeleteCodexQuotaHistoryCycleClearsActualDeferredCycle(t *testing.T) {
 	if weeklyID == 0 || fiveHourID == 0 {
 		t.Fatalf("missing initial cycles: %+v", cycles)
 	}
-	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{
+	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		UsageHeaderSnapshotFlushInterval: time.Hour, CodexQuotaHistoryFlushInterval: time.Hour,
-		CodexQuotaHistoryHeartbeatInterval: time.Hour, PricingCatalog: emptyPricingCatalogForTest(),
+		CodexQuotaHistoryHeartbeatInterval: time.Hour,
 	})
 	t.Cleanup(service.StopRefreshTasks)
 	timers := make(chan usageHeaderManualTimer, 4)
@@ -104,9 +104,8 @@ func TestDeleteCodexQuotaHistoryCycleAllowsObservationsReceivedAfterDeletion(t *
 		t.Fatal(err)
 	}
 	cycle := loadCodexQuotaCycles(t, db, auth)[0]
-	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{
+	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		UsageHeaderSnapshotFlushInterval: time.Hour, CodexQuotaHistoryFlushInterval: time.Hour,
-		PricingCatalog: emptyPricingCatalogForTest(),
 	})
 	t.Cleanup(service.StopRefreshTasks)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -144,9 +143,8 @@ func TestDeleteCodexQuotaHistoryCyclePreservesQueuedTrustedRefresh(t *testing.T)
 			handler := &recordingProviderHandler{output: ProviderOutput{Provider: "codex", Result: CodexResult{Usage: &CodexUsagePayload{
 				RateLimit: &CodexRateLimitInfo{PrimaryWindow: codexHistoryUsageWindow(11, 18000, resetAt)},
 			}}}}
-			service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(map[string]ProviderHandler{"codex": handler}), ServiceOptions{
+			service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(map[string]ProviderHandler{"codex": handler}), ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 				UsageHeaderSnapshotFlushInterval: time.Hour, CodexQuotaHistoryFlushInterval: time.Hour,
-				PricingCatalog: emptyPricingCatalogForTest(),
 			})
 			t.Cleanup(service.StopRefreshTasks)
 			writes := make(chan error, 1)
@@ -216,9 +214,9 @@ func TestDeleteCodexQuotaHistoryCyclePreservesCalibratedNeighbor(t *testing.T) {
 			if len(cycles) != 2 || !cycles[1].ResetAt.Equal(calibrated.MainQuotaObservations[0].ResetAt) {
 				t.Fatalf("expected two separate calibrated cycles: %+v", cycles)
 			}
-			service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{
+			service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 				UsageHeaderSnapshotFlushInterval: time.Hour, CodexQuotaHistoryFlushInterval: time.Hour,
-				CodexQuotaHistoryHeartbeatInterval: time.Hour, PricingCatalog: emptyPricingCatalogForTest(),
+				CodexQuotaHistoryHeartbeatInterval: time.Hour,
 			})
 			t.Cleanup(service.StopRefreshTasks)
 			timers := make(chan usageHeaderManualTimer, 4)
@@ -279,9 +277,8 @@ func TestDeleteCodexQuotaHistoryCycleRestoresOldCycleWithoutRestart(t *testing.T
 	}
 	cycles := loadCodexQuotaCycles(t, db, auth)
 	oldID, badID := cycles[0].ID, cycles[1].ID
-	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{
+	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		UsageHeaderSnapshotFlushInterval: time.Hour, CodexQuotaHistoryFlushInterval: time.Hour,
-		PricingCatalog: emptyPricingCatalogForTest(),
 	})
 	t.Cleanup(service.StopRefreshTasks)
 	timers := make(chan usageHeaderManualTimer, 10)
@@ -388,9 +385,8 @@ func TestDeleteCodexQuotaHistoryCycleInterruptsHeaderWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	cycle := loadCodexQuotaCycles(t, db, auth)[0]
-	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{
+	service := NewServiceWithRegistryAndOptions(db, NewProviderRegistry(nil), ServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		UsageHeaderSnapshotFlushInterval: time.Hour, CodexQuotaHistoryFlushInterval: time.Hour,
-		PricingCatalog: emptyPricingCatalogForTest(),
 	})
 	t.Cleanup(service.StopRefreshTasks)
 	timers := make(chan usageHeaderManualTimer, 1)

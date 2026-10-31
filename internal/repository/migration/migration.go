@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"cpa-usage-keeper/internal/repository/storedpricing"
 	"cpa-usage-keeper/internal/timeutil"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
@@ -73,10 +74,8 @@ const (
 	// migrationAddUsageEventClientMetadata 保存 CPA 新增的客户端请求元数据，历史行保持 NULL。
 	migrationAddUsageEventClientMetadata = "20260729_add_usage_event_client_metadata"
 	// migrationCreateUsageEventArchive 创建永久冷表；运行期归档在 schema 完成后才会启动。
-	migrationCreateUsageEventArchive = "20260730_create_usage_event_archive"
-	// migrationLocalRankingStats 创建固定四周期的本地排行累计。
-	migrationLocalRankingStats = "20260731_local_ranking_stats"
-	// migrationAddCPAAPIKeyLocalRankingAvatar 保存可空的本地排行头像覆盖值。
+	migrationCreateUsageEventArchive        = "20260730_create_usage_event_archive"
+	migrationLocalRankingStats              = "20260731_local_ranking_stats"
 	migrationAddCPAAPIKeyLocalRankingAvatar = "20260803_add_cpa_api_key_local_ranking_avatar"
 	// migrationAddAuthSessionClientMetadata 保存会话客户端与最近活动信息，旧会话只回填活动时间。
 	migrationAddAuthSessionClientMetadata = "20260813_add_auth_session_client_metadata"
@@ -101,7 +100,16 @@ const (
 	migrationNormalizeUsageEventParentSessionNull   = "20260922_normalize_usage_event_parent_session_null"
 	migrationOfficialModelPrices                    = "20261012_official_model_prices"
 	// migrationLimitLatencySamplePoints 缩小已保存散点，事务前必须备份旧 BLOB。
-	migrationLimitLatencySamplePoints = "20260925_limit_latency_sample_points"
+	migrationLimitLatencySamplePoints   = "20260925_limit_latency_sample_points"
+	migrationAddPricingStorageStructure = "20261009_pricing_storage_structure"
+	migrationRemoveRanking              = "20261009_remove_ranking"
+	// migrationAddUsageEventTraceMetadata 只保存上游提供的执行与节点元数据，历史行保持 NULL。
+	migrationAddUsageEventTraceMetadata = "20261008_usage_event_trace_metadata"
+	// migrationRecoverExecutionUsageEvents 以短事务回填事件标识并重新排队旧入口误拒绝的执行消息。
+	migrationRecoverExecutionUsageEvents       = "20261018_recover_execution_usage_events"
+	migrationAddUsageEventEffectiveServiceTier = "20261023_usage_event_effective_service_tier"
+	migrationAddPluginAPIKeySources            = "20261028_plugin_api_key_sources"
+	migrationStoredPricingConfiguration        = "20261029_stored_pricing_configuration"
 )
 
 type schemaMigration struct {
@@ -145,6 +153,64 @@ func Run(db *gorm.DB, optionValues ...RunOptions) error {
 		}
 	}
 	return nil
+}
+
+// RunPublished 只执行费用持久化改版之前的已发布迁移；各版本仍使用原事务、分批和备份合同。
+// 首次升级必须先在仓储层完成 M1 保护，再调用此入口，不能提前运行末尾费用结构版本。
+func RunPublished(db *gorm.DB, optionValues ...RunOptions) error {
+	if len(optionValues) > 1 {
+		return fmt.Errorf("run published schema migrations: expected at most one options value")
+	}
+	options := RunOptions{}
+	if len(optionValues) == 1 {
+		options = optionValues[0]
+	}
+	if err := createSchemaMigrationsTable(db); err != nil {
+		return err
+	}
+	migrations := orderedMigrations()
+	boundary, err := pricingStorageMigrationBoundary(migrations)
+	if err != nil {
+		return err
+	}
+	for _, item := range migrations[:boundary] {
+		if err := runSchemaMigration(db, item, options); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RunPricingStorageStructure 在 M3 旧价和 C/H 已持久化后单独添加费用列；缺旧版本时拒绝越序增列。
+func RunPricingStorageStructure(db *gorm.DB) error {
+	if err := createSchemaMigrationsTable(db); err != nil {
+		return err
+	}
+	migrations := orderedMigrations()
+	boundary, err := pricingStorageMigrationBoundary(migrations)
+	if err != nil {
+		return err
+	}
+	for _, item := range migrations[:boundary] {
+		applied, err := schemaMigrationApplied(db, item.version)
+		if err != nil {
+			return err
+		}
+		if !applied {
+			return fmt.Errorf("published schema migration %s must finish before pricing storage", item.version)
+		}
+	}
+	return runSchemaMigration(db, migrations[boundary])
+}
+
+// pricingStorageMigrationBoundary 定位固定费用版本；后续恢复迁移在完整迁移阶段执行。
+func pricingStorageMigrationBoundary(migrations []databaseMigration) (int, error) {
+	for index, item := range migrations {
+		if item.version == migrationAddPricingStorageStructure {
+			return index, nil
+		}
+	}
+	return 0, fmt.Errorf("pricing storage migration is not registered")
 }
 
 func MarkAllAsApplied(db *gorm.DB) error {
@@ -263,6 +329,16 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationOfficialModelPrices, run: officialModelPricesMigration},
 		{version: "20261013_credential_model_price_overrides", run: credentialModelPriceOverridesMigration},
 		{version: "20261013_pricing_migration", run: pricingMigrationSchemaMigration},
+		{version: migrationAddUsageEventTraceMetadata, run: addUsageEventTraceMetadataMigration},
+		// Stored valuation only adds nullable structure. Fork adoption remains explicit.
+		{version: migrationAddPricingStorageStructure, run: addPricingStorageStructureMigration},
+		// Fork ranking is retained; this upstream version is a no-op here.
+		{version: migrationRemoveRanking, run: removeRankingMigration},
+		{version: migrationRecoverExecutionUsageEvents, run: recoverExecutionUsageEventsMigration, disableTransaction: true},
+		{version: "20261020_add_auth_session_oidc_identity", run: addAuthSessionOIDCIdentityMigration},
+		{version: migrationAddUsageEventEffectiveServiceTier, run: addUsageEventEffectiveServiceTierMigration},
+		{version: migrationAddPluginAPIKeySources, run: addPluginAPIKeySourcesMigration},
+		{version: migrationStoredPricingConfiguration, run: storedpricing.CreateSchema},
 	}
 }
 

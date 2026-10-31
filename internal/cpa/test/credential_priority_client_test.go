@@ -10,60 +10,62 @@ import (
 	"time"
 
 	"cpa-usage-keeper/internal/cpa"
+	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
 )
 
-func TestPriorityClientSendsOnlyPriorityFields(t *testing.T) {
-	cases := []struct {
-		name, providerType, path string
-		openAI                   bool
-	}{
-		{name: "codex", providerType: "codex", path: "/v0/management/codex-api-key"},
-		{name: "xai", providerType: "xai", path: "/v0/management/xai-api-key"},
-		{name: "gemini", providerType: "gemini", path: "/v0/management/gemini-api-key"},
-		{name: "gemini-interactions", providerType: "gemini-interactions", path: "/v0/management/interactions-api-key"},
-		{name: "claude", providerType: "claude", path: "/v0/management/claude-api-key"},
-		{name: "vertex", providerType: "vertex", path: "/v0/management/vertex-api-key"},
-		{name: "meta", providerType: "meta", path: "/v0/management/meta-api-key"},
-		{name: "openai", path: "/v0/management/openai-compatibility", openAI: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+func TestProviderConfigClientPUTsEachSupplierList(t *testing.T) {
+	for _, providerType := range []string{"codex", "xai", "gemini", "gemini-interactions", "claude", "vertex", "meta", "openai"} {
+		t.Run(providerType, func(t *testing.T) {
+			var document providerconfig.Document
+			if err := json.Unmarshal([]byte(`[{"priority":5,"keys":[{"api-key":"key","auth_index":"target"}]}]`), &document); err != nil {
+				t.Fatal(err)
+			}
+			location, _ := document.FindFirst("target")
+			if providerType == "openai" {
+				document.SetGroupPriority(location, -7)
+			} else {
+				document.SetKeyPriority(location, -7)
+			}
+			path, _ := cpa.ProviderConfigPath(providerType)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodPatch || r.URL.Path != tc.path || r.URL.RawQuery != "" {
-					t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+				if r.Method != http.MethodPut || r.URL.Path != path || r.URL.RawQuery != "" {
+					t.Errorf("request = %s %s", r.Method, r.URL.String())
 				}
-				var body map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Fatal(err)
+				if r.Header.Get("Authorization") != "Bearer management-secret" || r.Header.Get("Content-Type") != "application/json" {
+					t.Errorf("management headers missing")
 				}
-				want := map[string]any{"index": float64(3), "value": map[string]any{"priority": float64(-7)}}
-				if !reflect.DeepEqual(body, want) {
-					t.Fatalf("PATCH body = %#v, want %#v", body, want)
+				var received providerconfig.Document
+				if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+					t.Error(err)
+					return
+				}
+				got := received.Groups[0].Keys[0].Fields["priority"]
+				if providerType == "openai" {
+					got = received.Groups[0].Fields["priority"]
+				}
+				if string(got) != "-7" {
+					t.Errorf("priority = %s", got)
+				}
+				if _, exists := received.Groups[0].Keys[0].Fields["auth_index"]; exists {
+					t.Error("read-only auth index entered PUT")
 				}
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer server.Close()
-			client := cpa.NewClient(server.URL, "management-secret", 2*time.Second, false)
-			var status int
-			var err error
-			if tc.openAI {
-				status, err = client.UpdateOpenAICompatibilityPriority(context.Background(), 3, -7)
-			} else {
-				status, err = client.UpdateProviderPriority(context.Background(), tc.providerType, 3, -7)
-			}
+			status, err := cpa.NewClient(server.URL, "management-secret", 2*time.Second, false).UpdateProviderConfig(context.Background(), providerType, &document, "")
 			if err != nil || status != http.StatusOK {
-				t.Fatalf("priority patch status=%d err=%v", status, err)
+				t.Fatalf("PUT status = %d, err = %v", status, err)
 			}
 		})
 	}
 	if cpa.ProviderKeyStatusSupported("meta") || cpa.ProviderKeyStatusSupported("openai") {
-		t.Fatal("priority support must not broaden status support")
+		t.Fatal("priority support broadened status support")
 	}
 }
 
-func TestAuthFilePriorityClientSendsNameAndPriorityOnly(t *testing.T) {
+func TestCredentialPriorityClientSendsNameAndPriorityOnly(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPatch || r.URL.Path != "/v0/management/auth-files/fields" {
+		if r.Method != http.MethodPatch || r.URL.Path != "/v8/management/credentials/fields" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		var body map[string]any
@@ -78,7 +80,7 @@ func TestAuthFilePriorityClientSendsNameAndPriorityOnly(t *testing.T) {
 	}))
 	defer server.Close()
 	client := cpa.NewClient(server.URL, "management-secret", 2*time.Second, false)
-	if status, err := client.UpdateAuthFilePriority(context.Background(), "auth.json", 0); err != nil || status != http.StatusOK {
+	if status, err := client.UpdateCredentialPriority(context.Background(), "auth.json", 0); err != nil || status != http.StatusOK {
 		t.Fatalf("priority patch status=%d err=%v", status, err)
 	}
 }

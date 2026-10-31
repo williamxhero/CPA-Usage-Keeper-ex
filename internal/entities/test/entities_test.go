@@ -32,13 +32,15 @@ func TestAllIncludesCoreModels(t *testing.T) {
 		&CredentialModelMultiplier{},
 		&CredentialModelPriceOverride{},
 		&ChannelModelPrice{},
+		&PricingState{},
+		&PricingMigrationState{},
 		&UsageIdentity{},
 		&CPAAPIKey{},
+		&LocalRankingPeriodStat{},
 		&UsageOverviewHourlyStat{},
 		&UsageOverviewDailyStat{},
 		// 全局聚合只注册一张通用 checkpoint 表。
 		&UsageAggregationCheckpoint{},
-		&LocalRankingPeriodStat{},
 		// Activity 统计必须随核心模型注册，确保全新数据库直接得到新表。
 		&UsageActivityStat{},
 		// Latency 小时/天数据共用一张聚合表。

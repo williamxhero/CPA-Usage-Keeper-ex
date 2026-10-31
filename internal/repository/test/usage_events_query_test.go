@@ -77,7 +77,7 @@ func seedUsageEventModels(t *testing.T, db *gorm.DB) {
 		{EventKey: "usage-events-query-alpha", Model: "model-alpha", Timestamp: time.Date(2026, 7, 21, 8, 0, 0, 0, time.UTC)},
 		{EventKey: "usage-events-query-beta", Model: "model-beta", Timestamp: time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)},
 	}
-	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
+	if _, _, err := repository.InsertUsageEvents(db, requestEventFixtureWithZeroFees(events)); err != nil {
 		t.Fatalf("InsertUsageEvents returned error: %v", err)
 	}
 }

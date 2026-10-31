@@ -73,21 +73,21 @@ describe('QuestionMarkHelp', () => {
     await act(async () => {
       root.render(
         <QuestionMarkHelp
-          label="Ranking details"
-          description="Ranking explanation."
+          label="Help details"
+          description="Help explanation."
           portal={false}
-          tooltipClassName="ranking-tooltip"
-          tooltipVisibleClassName="ranking-tooltip-visible"
-          buttonProps={{ 'data-ranking-help': 'true' }}
-          tooltipProps={{ 'data-ranking-tooltip': 'true' }}
+          tooltipClassName="inline-tooltip"
+          tooltipVisibleClassName="inline-tooltip-visible"
+          buttonProps={{ 'data-inline-help': 'true' }}
+          tooltipProps={{ 'data-inline-tooltip': 'true' }}
         >
-          Ranking explanation.
+          Help explanation.
         </QuestionMarkHelp>,
       )
     })
 
-    const button = container.querySelector<HTMLButtonElement>('[data-ranking-help]')!
-    const tooltip = container.querySelector<HTMLElement>('[data-ranking-tooltip]')!
+    const button = container.querySelector<HTMLButtonElement>('[data-inline-help]')!
+    const tooltip = container.querySelector<HTMLElement>('[data-inline-tooltip]')!
 
     return { button, tooltip }
   }

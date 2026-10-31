@@ -33,6 +33,32 @@ type AnalysisModelUsageRecord struct {
 	Requests    int64
 }
 
+// AnalysisModelSpeedRecord 保存跨源桶的 sum/count，显示桶在仓储层使用真实时间边界合并。
+type AnalysisModelSpeedRecord struct {
+	RangeStart *time.Time
+	RangeEnd   *time.Time
+	Buckets    []AnalysisModelSpeedBucketRecord
+	Series     []AnalysisModelSpeedSeriesRecord
+}
+
+type AnalysisModelSpeedBucketRecord struct {
+	Start time.Time
+	End   time.Time
+}
+
+type AnalysisModelSpeedSampleRecord struct {
+	SpeedTPSSum      float64
+	SpeedSampleCount int64
+	MeanTPS          *float64
+}
+
+type AnalysisModelSpeedSeriesRecord struct {
+	Model            string
+	TotalTokens      int64
+	SpeedSampleCount int64
+	Samples          []AnalysisModelSpeedSampleRecord
+}
+
 type AnalysisCompositionRecord struct {
 	DualCosts           pricing.DualCosts
 	Key                 string
@@ -73,6 +99,12 @@ type AnalysisCostBreakdownRecord struct {
 	OutputCostUSD        float64
 	TotalCostUSD         float64
 	CostAvailable        bool
+}
+
+// AnalysisCostSummaryRecord holds a stored-valuation total, not a fork snapshot breakdown.
+type AnalysisCostSummaryRecord struct {
+	TotalCostUSD  float64
+	CostAvailable bool
 }
 
 type AnalysisModelEfficiencyRecord struct {
@@ -118,17 +150,20 @@ type AnalysisLatencyDiagnosticsRecord struct {
 }
 
 type AnalysisRecord struct {
-	PricingSnapshotID     string
-	Granularity           AnalysisGranularity
-	RangeStart            *time.Time
-	RangeEnd              *time.Time
-	TokenUsage            []AnalysisTokenUsageBucketRecord
-	ModelUsage            []AnalysisModelUsageRecord
-	APIKeyComposition     []AnalysisCompositionRecord
-	ModelComposition      []AnalysisCompositionRecord
-	AuthFilesComposition  []AnalysisCompositionRecord
-	AIProviderComposition []AnalysisCompositionRecord
-	Heatmap               []AnalysisHeatmapRecord
-	CostBreakdown         AnalysisCostBreakdownRecord
-	ModelEfficiency       []AnalysisModelEfficiencyRecord
+	PricingSnapshotID      string
+	Granularity            AnalysisGranularity
+	RangeStart             *time.Time
+	RangeEnd               *time.Time
+	TokenUsage             []AnalysisTokenUsageBucketRecord
+	ModelUsage             []AnalysisModelUsageRecord
+	ModelSpeed             AnalysisModelSpeedRecord
+	APIKeyComposition      []AnalysisCompositionRecord
+	ModelComposition       []AnalysisCompositionRecord
+	AuthFilesComposition   []AnalysisCompositionRecord
+	CredentialsComposition []AnalysisCompositionRecord
+	AIProviderComposition  []AnalysisCompositionRecord
+	Heatmap                []AnalysisHeatmapRecord
+	CostBreakdown          AnalysisCostBreakdownRecord
+	CostSummary            AnalysisCostSummaryRecord
+	ModelEfficiency        []AnalysisModelEfficiencyRecord
 }

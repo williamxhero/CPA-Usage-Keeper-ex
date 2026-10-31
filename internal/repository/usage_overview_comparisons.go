@@ -30,7 +30,17 @@ func usageOverviewComparisonBuckets(filter dto.UsageQueryFilter, byDay bool) []s
 	start, end := timeutil.NormalizeStorageTime(*filter.StartTime), timeutil.NormalizeStorageTime(*filter.EndTime)
 	cursor := start.Truncate(time.Hour)
 	if byDay {
-		cursor = time.Date(start.Year(), start.Month(), start.Day(), 0, 0, 0, 0, start.Location())
+		for date := timeutil.DateOf(start); ; date = date.AddDays(1) {
+			bounds, exists := timeutil.DayBounds(date, start.Location())
+			if !exists {
+				continue
+			}
+			if bounds.Start.After(end) || (filter.EndExclusive && bounds.Start.Equal(end)) {
+				break
+			}
+			buckets = append(buckets, bounds.Start.Format(time.DateOnly))
+		}
+		return buckets
 	}
 	for cursor.Before(end) || (!filter.EndExclusive && cursor.Equal(end)) {
 		bucket, _ := usageOverviewBucket(cursor, byDay)
@@ -182,8 +192,13 @@ func loadAndApplyUsageOverviewStats(overview *dto.UsageOverviewRecord, db *gorm.
 	if err != nil {
 		return err
 	}
+	read := overviewBucketRead(start, end, grain)
 	for _, row := range rows {
-		applyUsageOverviewStatToOverviewWithCost(overview, row, bucketByDay, calculateUsageOverviewProjectionCost(resolver, row, grain, evidence))
+		// Price evidence is keyed by the original physical bucket; only display
+		// uses the business-date start for legacy midnight-gap daily keys.
+		cost := calculateUsageOverviewProjectionCost(resolver, row, grain, evidence)
+		row.BucketStart = read.displayStart(row.BucketStart)
+		applyUsageOverviewStatToOverviewWithCost(overview, row, bucketByDay, cost)
 	}
 	return nil
 }

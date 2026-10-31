@@ -15,8 +15,6 @@ type source struct {
 	defaultDisplayName string
 	// warningName 保留现有来源错误文案中的 endpoint 业务名称。
 	warningName string
-	// optionalNotFound 表示旧 CPA 返回 typed 404 时静默跳过该新 endpoint。
-	optionalNotFound bool
 	// fetch 绑定当前 endpoint 的实际读取与归一化函数。
 	fetch sourceFetch
 }
@@ -25,8 +23,8 @@ type source struct {
 type sourceResult struct {
 	// credentials 只包含通过必填字段校验的凭证。
 	credentials []Credential
-	// fetched 表示 endpoint 成功返回，即使 payload 为空或条目全部无效也为 true。
+	// fetched 表示读取成功且凭证标识完整；空列表或仅含空 Key 时仍为 true。
 	fetched bool
-	// warning 保存该来源的 fetch、nil response 或 decode 错误。
+	// warning 保存该来源的读取、解码或身份校验错误。
 	warning error
 }

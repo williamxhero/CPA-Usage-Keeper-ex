@@ -28,17 +28,22 @@ type ServiceOptions struct {
 	// CodexQuotaHistoryQueueSize 分别覆盖 Header 与可信主动查询两条有界队列容量，非正值使用生产默认值。
 	CodexQuotaHistoryQueueSize int
 	PricingCatalog             *pricing.Catalog
+	// StoredWindowStats explicitly opts into persisted fees; current constructors still require PricingCatalog.
+	StoredWindowStats *StoredWindowStatsFactory
 }
 
 type Service struct {
-	db       *gorm.DB
-	registry ProviderRegistry
-	pricing  *pricing.Catalog
+	db                *gorm.DB
+	registry          ProviderRegistry
+	pricing           *pricing.Catalog
+	storedWindowStats *StoredWindowStatsFactory
 	// quotaUpstreamResponsesEnabled 控制刷新任务是否把 CPA 转发的完整上游响应写入最新限额缓存。
 	quotaUpstreamResponsesEnabled bool
 
 	refreshMu    sync.Mutex
 	refreshTasks map[string]*RefreshTaskRecord
+	// cacheGeneration 与 refreshTasks 共用 refreshMu；清理前启动的任务和 Header 不得发布结果。
+	cacheGeneration uint64
 	// nextRefreshTaskCleanupAt 由 refreshMu 保护，只限制读取接口的全量清理频率。
 	nextRefreshTaskCleanupAt time.Time
 	// resetInFlight 按 auth_index 记录正在消费的 reset credit，避免并发重复扣减官方次数。
@@ -64,7 +69,7 @@ type Service struct {
 	autoRefreshDelay func(context.Context, time.Duration) bool
 	// lastAutoRefreshAttemptAt 记录最近一次尝试启动整轮自动刷新的时间，用于扫描失败退避。
 	lastAutoRefreshAttemptAt time.Time
-	// lastAutoRefreshRoundAt 记录上次启动整轮 Auth Files 自动刷新入队的内存时间。
+	// lastAutoRefreshRoundAt 记录上次启动整轮 Credentials 自动刷新入队的内存时间。
 	lastAutoRefreshRoundAt time.Time
 	// refreshLifecycleMu 保护 refreshClosing 和 refreshWG.Add，避免关闭等待期间继续登记后台 goroutine。
 	refreshLifecycleMu sync.Mutex
@@ -108,7 +113,7 @@ type Service struct {
 	codexQuotaHistoryWrite codexQuotaHistoryWriter
 	// codexQuotaHistoryLoad 在缓存首次命中或写失败失效后从 writer 恢复当前周期尾段。
 	codexQuotaHistoryLoad codexQuotaHistoryLoader
-	// codexQuotaHistoryListIdentities 批量确认 Header 来源属于活跃 Codex Auth File。
+	// codexQuotaHistoryListIdentities 批量确认 Header 来源属于活跃 Codex Credential。
 	codexQuotaHistoryListIdentities codexQuotaHistoryIdentityLister
 	// codexQuotaHistoryMu 同时保护 closing 检查和非阻塞发送，避免 stop/send 竞态。
 	codexQuotaHistoryMu sync.Mutex
@@ -125,12 +130,14 @@ type CheckRequest struct {
 }
 
 type CheckResponse struct {
-	ID                                  string            `json:"id"`
-	Quota                               []QuotaRow        `json:"quota"`
-	Subscription                        *SubscriptionInfo `json:"subscription,omitempty"`
-	RateLimitResetCreditsAvailableCount *int              `json:"rateLimitResetCreditsAvailableCount,omitempty"`
+	ID                                  string                  `json:"id"`
+	Quota                               []QuotaRow              `json:"quota"`
+	Subscription                        *SubscriptionInfo       `json:"subscription,omitempty"`
+	RateLimitResetCreditsAvailableCount *int                    `json:"rateLimitResetCreditsAvailableCount,omitempty"`
+	ClaudeResetGrants                   *ClaudeResetGrantStatus `json:"claudeResetGrants,omitempty"`
 }
 
+// NewService constructs the current-price service; options must supply a catalog.
 func NewService(db *gorm.DB, caller ManagementClient, pricingCatalog *pricing.Catalog) *Service {
 	return NewServiceWithOptions(db, caller, ServiceOptions{PricingCatalog: pricingCatalog})
 }
@@ -142,11 +149,17 @@ func NewServiceWithOptions(db *gorm.DB, caller ManagementClient, options Service
 	return NewServiceWithRegistryAndOptions(db, NewDefaultProviderRegistry(caller, DefaultProviderConfigs()), options)
 }
 
+// NewServiceWithRegistry requires an explicit current-price catalog.
 func NewServiceWithRegistry(db *gorm.DB, registry ProviderRegistry, pricingCatalog *pricing.Catalog) *Service {
 	return NewServiceWithRegistryAndOptions(db, registry, ServiceOptions{PricingCatalog: pricingCatalog})
 }
 
+// NewServiceWithRegistryAndOptions validates the explicitly selected cost source.
 func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, options ServiceOptions) *Service {
+	// Validate before allocating contexts or starting either background runner.
+	if options.PricingCatalog == nil && options.StoredWindowStats == nil {
+		panic("pricing catalog is required")
+	}
 	workerLimit := options.RefreshWorkerLimit
 	if workerLimit <= 0 {
 		workerLimit = RefreshWorkerLimit
@@ -174,14 +187,11 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		codexHistoryQueueSize = codexQuotaHistoryQueueSize
 	}
 	refreshContext, refreshCancel := context.WithCancel(context.Background())
-	pricingCatalog := options.PricingCatalog
-	if pricingCatalog == nil {
-		panic("pricing catalog is required")
-	}
 	service := &Service{
 		db:                                 db,
 		registry:                           registry,
-		pricing:                            pricingCatalog,
+		pricing:                            options.PricingCatalog,
+		storedWindowStats:                  options.StoredWindowStats,
 		quotaUpstreamResponsesEnabled:      options.QuotaUpstreamResponsesEnabled,
 		refreshTasks:                       make(map[string]*RefreshTaskRecord),
 		resetInFlight:                      make(map[string]struct{}),
@@ -209,7 +219,7 @@ func NewServiceWithRegistryAndOptions(db *gorm.DB, registry ProviderRegistry, op
 		codexQuotaHistoryNewTimer:          newCodexQuotaHistoryTimer,
 		codexQuotaHistoryWrite:             repository.WriteCodexMainQuotaObservations,
 		codexQuotaHistoryLoad:              repository.LoadLatestQuotaHistoryState,
-		codexQuotaHistoryListIdentities:    repository.ListActiveAuthFileUsageIdentitiesByAuthIndexes,
+		codexQuotaHistoryListIdentities:    repository.ListActiveCredentialUsageIdentitiesByAuthIndexes,
 	}
 	go service.runUsageHeaderSnapshotWorker()
 	// history 拥有独立队列、timer 和稳定尾段，不能复用一分钟 cache worker 的 pending map。
@@ -315,8 +325,8 @@ func (s *Service) check(ctx context.Context, request CheckRequest, beforeSubscri
 	if authIndex == "" {
 		return CheckResponse{}, false, fmt.Errorf("%w: auth_index is required", ErrValidation)
 	}
-	// 只允许 auth files 身份查询限额，AI provider 身份不进入 provider 调用链路。
-	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(ctx, s.db, authIndex)
+	// 只允许 credentials 身份查询限额，AI provider 身份不进入 provider 调用链路。
+	identity, err := repository.GetActiveCredentialUsageIdentityByAuthIndex(ctx, s.db, authIndex)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return CheckResponse{}, false, fmt.Errorf("%w: %s", ErrNotFound, authIndex)
@@ -374,6 +384,9 @@ func (s *Service) check(ctx context.Context, request CheckRequest, beforeSubscri
 		ID:           authIndex,
 		Quota:        NormalizeQuotaRows(providerOutput),
 		Subscription: NormalizeSubscription(providerOutput),
+	}
+	if result, ok := providerOutput.Result.(ClaudeResult); ok && result.Usage != nil {
+		response.ClaudeResetGrants = result.Usage.ResetGrants
 	}
 	// 实时结果没有套餐时仅允许回退当前 Identity metadata；现在只有 Codex 具备该来源。
 	if response.Subscription == nil {

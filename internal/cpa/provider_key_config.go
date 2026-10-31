@@ -6,75 +6,92 @@ import (
 	"net/http"
 	"strings"
 
+	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
 	"cpa-usage-keeper/internal/cpa/dto/response"
 )
 
-// ProviderKeyDisabledExcludedModel 是 CPA 六类 API Key 的整条停用标记：excluded-models 中精确的 "*"。
+// ProviderKeyDisabledExcludedModel 是普通 API Key 有效 excluded-models 中的整条停用标记。
 const ProviderKeyDisabledExcludedModel = "*"
 
-// providerKeyPatchRequest 是六类 API Key 管理接口共用的 PATCH 结构，按配置数组下标精确定位目标字段。
-type providerKeyPatchRequest struct {
-	// Index 是 CPA provider 配置数组下标；CPA 优先使用它，避免重复 API Key 命中第一条。
-	Index int                   `json:"index"`
-	Value providerKeyPatchValue `json:"value"`
-}
-
-type providerKeyPatchValue struct {
-	ExcludedModels []string `json:"excluded-models"`
-}
-
-// providerKeyEndpoint 把 Keeper 的 provider type 映射到 CPA 管理接口，OpenAI Compatibility 不在其中。
-func providerKeyEndpoint(providerType string) (path string, payloadKey string, kind string, ok bool) {
+// providerKeyEndpoint 仅列出支持成员启停的供应商；Meta 与 OpenAI 的能力另行判断。
+func providerKeyEndpoint(providerType string) (path string, kind string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(providerType)) {
 	case "codex":
-		return cpaManagementCodexAPIKeyEndpoint, "codex-api-key", "codex api keys", true
+		return cpaManagementCodexAPIKeyEndpoint, "codex api keys", true
 	case "xai":
-		return cpaManagementXAIAPIKeyEndpoint, "xai-api-key", "xai api keys", true
+		return cpaManagementXAIAPIKeyEndpoint, "xai api keys", true
 	case "gemini":
-		return cpaManagementGeminiAPIKeyEndpoint, "gemini-api-key", "gemini api keys", true
+		return cpaManagementGeminiAPIKeyEndpoint, "gemini api keys", true
 	case "gemini-interactions":
-		return cpaManagementInteractionsAPIKeyEndpoint, "interactions-api-key", "interactions api keys", true
+		return cpaManagementInteractionsAPIKeyEndpoint, "interactions api keys", true
 	case "claude":
-		return cpaManagementClaudeAPIKeyEndpoint, "claude-api-key", "claude api keys", true
+		return cpaManagementClaudeAPIKeyEndpoint, "claude api keys", true
 	case "vertex":
-		return cpaManagementVertexAPIKeyEndpoint, "vertex-api-key", "vertex api keys", true
+		return cpaManagementVertexAPIKeyEndpoint, "vertex api keys", true
 	default:
-		return "", "", "", false
+		return "", "", false
 	}
 }
 
-// FetchProviderKeyConfig 按 Keeper provider type 读取对应 API Key 列表，用于读取现有 excluded-models。
+// priorityProviderKeyEndpoint 在启停类型之外允许 Meta 编辑优先级，不因此开放其启停操作。
+func priorityProviderKeyEndpoint(providerType string) (path string, kind string, ok bool) {
+	if strings.EqualFold(strings.TrimSpace(providerType), "meta") {
+		return cpaManagementMetaAPIKeyEndpoint, "meta api keys", true
+	}
+	return providerKeyEndpoint(providerType)
+}
+
+// ProviderConfigPath 为读取、整列表写入及跨服务互斥提供同一供应商路径。
+func ProviderConfigPath(providerType string) (string, bool) {
+	if strings.EqualFold(strings.TrimSpace(providerType), "openai") {
+		return cpaManagementOpenAICompatibilityEndpoint, true
+	}
+	path, _, ok := priorityProviderKeyEndpoint(providerType)
+	return path, ok
+}
+
 func (c *Client) FetchProviderKeyConfig(ctx context.Context, providerType string) (*response.ProviderKeyConfigResult, error) {
-	path, payloadKey, kind, ok := providerKeyEndpoint(providerType)
+	path, kind, ok := providerKeyEndpoint(providerType)
 	if !ok {
 		return nil, fmt.Errorf("unsupported provider type %q", strings.TrimSpace(providerType))
 	}
-	return c.fetchProviderKeyConfig(ctx, path, payloadKey, kind)
+	return c.fetchProviderKeyConfig(ctx, path, kind)
 }
 
-// UpdateProviderKeyExcludedModels 按配置数组下标写回 excluded-models，空列表表示清除全部模型排除。
-// 下标来自同一次 GET 原始 payload 中的位置，因此重复 API Key 也能精确命中用户选中的那一条。
-func (c *Client) UpdateProviderKeyExcludedModels(ctx context.Context, providerType string, index int, excludedModels []string) (int, error) {
-	path, _, kind, ok := providerKeyEndpoint(providerType)
+func (c *Client) FetchPriorityProviderConfig(ctx context.Context, providerType string) (*response.ProviderKeyConfigResult, error) {
+	path, kind, ok := priorityProviderKeyEndpoint(providerType)
 	if !ok {
-		return 0, fmt.Errorf("unsupported provider type %q", strings.TrimSpace(providerType))
+		return nil, fmt.Errorf("unsupported priority provider type %q", providerType)
 	}
-	if index < 0 {
-		return 0, fmt.Errorf("provider key index must not be negative")
+	return c.fetchProviderKeyConfig(ctx, path, kind)
+}
+
+// UpdateProviderConfig 写入本次 GET 修改后的完整供应商列表，仅在副本中移除运行时标识。
+// 调用方必须持有供应商路径锁覆盖读取与写入；此方法不单独加锁，避免只保护写请求。
+// PUT 成功即返回，由服务更新本地状态并请求刷新，不额外执行强制回读。
+func (c *Client) UpdateProviderConfig(ctx context.Context, providerType string, document *providerconfig.Document, etag string) (int, error) {
+	path, ok := ProviderConfigPath(providerType)
+	if !ok {
+		return 0, fmt.Errorf("unsupported provider type %q", providerType)
 	}
-	// nil 会被编码成 JSON null，CPA 会当成“未提供该字段”，因此空列表必须显式传空数组。
-	if excludedModels == nil {
-		excludedModels = []string{}
+	if document == nil {
+		return 0, fmt.Errorf("provider configuration is unavailable")
 	}
-	statusCode, _, err := c.doManagementJSONRequestWithBody(ctx, http.MethodPatch, path, providerKeyPatchRequest{
-		Index: index,
-		Value: providerKeyPatchValue{ExcludedModels: excludedModels},
-	}, nil, kind)
+	// 只使用产生该 Document 的同次 GET token；旧 CPA 缺头时沿用无条件写入。
+	headers := http.Header{}
+	if etag != "" {
+		headers.Set("If-Match", etag)
+	}
+	statusCode, _, _, err := c.doManagementJSONRequestWithHeaders(ctx, http.MethodPut, path, document.Writable(), nil, "provider configuration", headers)
 	return statusCode, err
 }
 
-// ProviderKeyStatusSupported 报告 provider type 是否支持用 excluded-models 精确 "*" 整条停用。
 func ProviderKeyStatusSupported(providerType string) bool {
-	_, _, _, ok := providerKeyEndpoint(providerType)
+	_, _, ok := providerKeyEndpoint(providerType)
+	return ok
+}
+
+func ProviderPrioritySupported(providerType string) bool {
+	_, ok := ProviderConfigPath(providerType)
 	return ok
 }

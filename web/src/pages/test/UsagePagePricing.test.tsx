@@ -41,6 +41,9 @@ describe('UsagePage new pricing integration', () => {
         case '/api/v1/pricing/credential-model-matrix': return json(matrix);
         case '/api/v1/pricing/credentials/sync-status': return json({ state: 'success', in_flight: false });
         case '/api/v1/pricing/official': return json({ pricing: [] });
+        case '/api/v1/pricing/stored/models': return json({ models: [], config_revision: 0 });
+        case '/api/v1/pricing/stored/model-options': return json({ models: [] });
+        case '/api/v1/pricing/stored/recalculations/current': return json(null);
         default: return json({ error: 'Synthetic unavailable response' }, 404);
       }
     }));
@@ -57,7 +60,7 @@ describe('UsagePage new pricing integration', () => {
     vi.restoreAllMocks();
   });
 
-  it('renders only the two new pricing entry points and never requests legacy pricing APIs', async () => {
+  it('keeps matrix and official entry points alongside separate stored valuation, without retired APIs', async () => {
     await act(async () => root.render(<UsagePage />));
     expect(container.textContent).toContain(i18n.t('title', { ns: 'matrix_pricing' }));
     expect(container.textContent).toContain(i18n.t('official_title', { ns: 'matrix_pricing' }));
@@ -67,7 +70,9 @@ describe('UsagePage new pricing integration', () => {
     const pricingPaths = requests.filter((path) => path.startsWith('/api/v1/pricing'));
     expect(pricingPaths).toContain('/api/v1/pricing/credential-model-matrix');
     expect(pricingPaths).toContain('/api/v1/pricing/official');
-    expect(pricingPaths.every((path) => ['/api/v1/pricing/credential-model-matrix', '/api/v1/pricing/official', '/api/v1/pricing/credentials/sync-status'].includes(path))).toBe(true);
+    expect(container.textContent).toContain('Stored valuation / 已存估值');
+    expect(pricingPaths).toContain('/api/v1/pricing/stored/models');
+    expect(pricingPaths.every((path) => ['/api/v1/pricing/credential-model-matrix', '/api/v1/pricing/official', '/api/v1/pricing/credentials/sync-status', '/api/v1/pricing/stored/models', '/api/v1/pricing/stored/model-options', '/api/v1/pricing/stored/recalculations/current'].includes(path))).toBe(true);
     expect(requests).not.toContain('/api/v1/models');
   });
 });

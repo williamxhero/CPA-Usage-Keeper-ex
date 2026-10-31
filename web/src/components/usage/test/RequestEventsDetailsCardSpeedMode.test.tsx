@@ -73,13 +73,13 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
     const events = [{ ...baseEvent, service_tier: 'auto', response_service_tier: 'default' }];
     const mounted = await mountCard(events);
     const localizedLines = [
-      ['en', 'Speed Mode: Auto (auto)', 'Response Speed Mode: Standard (default)'],
-      ['zh', '速度模式：自动 (auto)', '响应速度模式：标准 (default)'],
-      ['zh-TW', '速度模式：自動 (auto)', '回應速度模式：標準 (default)'],
+      ['en', 'Effective Speed Mode: -', 'Speed Mode: Auto (auto)', 'Response Speed Mode: Standard (default)'],
+      ['zh', '有效速度模式：-', '速度模式：自动 (auto)', '响应速度模式：标准 (default)'],
+      ['zh-TW', '有效速度模式：-', '速度模式：自動 (auto)', '回應速度模式：標準 (default)'],
     ] as const;
 
     try {
-      for (const [language, requestLine, responseLine] of localizedLines) {
+      for (const [language, effectiveLine, requestLine, responseLine] of localizedLines) {
         await act(async () => {
           await i18n.changeLanguage(language);
           mounted.root.render(renderCardElement(events));
@@ -98,6 +98,7 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
 
         const tooltip = document.body.querySelector('[role="tooltip"]')!;
         expect(Array.from(tooltip.querySelectorAll('span'), (line) => line.textContent)).toEqual([
+          effectiveLine,
           requestLine,
           responseLine,
         ]);
@@ -123,7 +124,7 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
     expect(html).toContain('>Speed Mode</th>');
     expect(html).not.toContain('>Response Speed Mode</th>');
     expect(extractSpeedModeCells(html)).toEqual(['Auto / Standard', 'Standard / Standard']);
-    expect(html).toContain('aria-label="Speed Mode: Auto (auto); Response Speed Mode: Standard (default)"');
+    expect(html).toContain('aria-label="Effective Speed Mode: -; Speed Mode: Auto (auto); Response Speed Mode: Standard (default)"');
   });
 
   it('keeps the tooltip open while focus remains after the mouse leaves', async () => {
@@ -135,7 +136,7 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
     try {
       const cell = mounted.container.querySelector<HTMLTableCellElement>('tbody td')!;
       await act(async () => cell.focus());
-      expect(cell.getAttribute('aria-label')).toBe('Speed Mode: Auto (auto); Response Speed Mode: Standard (default)');
+      expect(cell.getAttribute('aria-label')).toBe('Effective Speed Mode: -; Speed Mode: Auto (auto); Response Speed Mode: Standard (default)');
       expect(cell.getAttribute('aria-describedby')).toBeNull();
       expect(document.body.querySelector('[role="tooltip"]')).not.toBeNull();
 
@@ -202,9 +203,9 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
     ]);
 
     expect(extractSpeedModeCells(html)).toEqual(['Fast / -', '- / Standard', '- / -']);
-    expect(html).toContain('aria-label="Speed Mode: Fast (priority); Response Speed Mode: -"');
-    expect(html).toContain('aria-label="Speed Mode: -; Response Speed Mode: Standard (default)"');
-    expect(html).toContain('aria-label="Speed Mode: -; Response Speed Mode: -"');
+    expect(html).toContain('aria-label="Effective Speed Mode: -; Speed Mode: Fast (priority); Response Speed Mode: -"');
+    expect(html).toContain('aria-label="Effective Speed Mode: -; Speed Mode: -; Response Speed Mode: Standard (default)"');
+    expect(html).toContain('aria-label="Effective Speed Mode: -; Speed Mode: -; Response Speed Mode: -"');
     expect(html).not.toContain('(-)');
   });
 });

@@ -1,7 +1,7 @@
 import { useMemo, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/chartjs';
-import { Chart, Doughnut } from 'react-chartjs-2';
+import { Chart, Doughnut } from './charts/UsageChart';
 import { Chart as ChartJS, type ChartData, type ChartOptions, type Plugin } from 'chart.js';
 import type { RealtimeCacheLevelPoint, RealtimeInsights, RealtimeWindowSummary } from '@/lib/types';
 import { Card } from '@/components/ui/Card';
@@ -59,7 +59,7 @@ export function buildRealtimeCacheData(points: RealtimeCacheLevelPoint[], labels
 function mixedOptions(isDark: boolean, isMobile: boolean, axisTitle: string, rateTitle: string, rateMax?: number): ChartOptions<'bar' | 'line'> {
   const theme = getUsageChartTheme(isDark);
   return {
-    responsive: true, maintainAspectRatio: false, animation: false,
+    responsive: true, maintainAspectRatio: false,
     interaction: { mode: 'index', intersect: false },
     datasets: { bar: { borderWidth: 0, borderRadius: 2, borderSkipped: false, barPercentage: .82, categoryPercentage: .78, maxBarThickness: 38 } },
     plugins: {
@@ -123,7 +123,7 @@ export function RealtimeDiagnostics({ insights, labels, isDark, isMobile }: { in
   const mixOptions = useMemo<TokenMixOptions>(() => {
     const theme=getUsageChartTheme(isDark);
     return {
-      responsive:true, maintainAspectRatio:false, animation:false, cutout:'64%', spacing:3, layout:{padding:8},
+      responsive:true, maintainAspectRatio:false, cutout:'64%', spacing:3, layout:{padding:8},
       plugins:{
         legend:{display:false},
         realtimeCacheShareCenter:{value:cacheShare,label:cacheShareLabel,primary:theme.textPrimary,secondary:theme.textSecondary},

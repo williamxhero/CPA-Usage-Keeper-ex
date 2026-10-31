@@ -34,6 +34,32 @@ type AnalysisModelUsage struct {
 	Requests    int64
 }
 
+// AnalysisModelSpeed 保存跨源桶的 sum/count，显示桶在仓储层使用真实时间边界合并。
+type AnalysisModelSpeed struct {
+	RangeStart *time.Time
+	RangeEnd   *time.Time
+	Buckets    []AnalysisModelSpeedBucket
+	Series     []AnalysisModelSpeedSeries
+}
+
+type AnalysisModelSpeedBucket struct {
+	Start time.Time
+	End   time.Time
+}
+
+type AnalysisModelSpeedSample struct {
+	SpeedTPSSum      float64
+	SpeedSampleCount int64
+	MeanTPS          *float64
+}
+
+type AnalysisModelSpeedSeries struct {
+	Model            string
+	TotalTokens      int64
+	SpeedSampleCount int64
+	Samples          []AnalysisModelSpeedSample
+}
+
 type AnalysisCompositionItem struct {
 	DualCosts           pricing.DualCosts
 	Key                 string
@@ -74,6 +100,12 @@ type AnalysisCostBreakdown struct {
 	OutputCostUSD        float64
 	TotalCostUSD         float64
 	CostAvailable        bool
+}
+
+// AnalysisCostSummary is separate from the fork's current-snapshot cost breakdown.
+type AnalysisCostSummary struct {
+	TotalCostUSD  float64
+	CostAvailable bool
 }
 
 type AnalysisModelEfficiencyItem struct {
@@ -118,18 +150,33 @@ type AnalysisLatencyDiagnostics struct {
 	MaxLatencyMS int64
 }
 
+// StoredAnalysisFilter is the explicit persisted-valuation analysis contract.
+// It intentionally has no pricing resolver, model-price, or realtime fields.
+type StoredAnalysisFilter struct {
+	Range        string
+	CustomUnit   string
+	StartTime    *time.Time
+	EndTime      *time.Time
+	EndExclusive bool
+	APIKeyID     string
+	QueryNow     *time.Time
+}
+
 type AnalysisSnapshot struct {
-	PricingSnapshotID     string
-	Granularity           AnalysisGranularity
-	RangeStart            *time.Time
-	RangeEnd              *time.Time
-	TokenUsage            []AnalysisTokenUsageBucket
-	ModelUsage            []AnalysisModelUsage
-	APIKeyComposition     []AnalysisCompositionItem
-	ModelComposition      []AnalysisCompositionItem
-	AuthFilesComposition  []AnalysisCompositionItem
-	AIProviderComposition []AnalysisCompositionItem
-	Heatmap               []AnalysisHeatmapCell
-	CostBreakdown         AnalysisCostBreakdown
-	ModelEfficiency       []AnalysisModelEfficiencyItem
+	PricingSnapshotID      string
+	Granularity            AnalysisGranularity
+	RangeStart             *time.Time
+	RangeEnd               *time.Time
+	TokenUsage             []AnalysisTokenUsageBucket
+	ModelSpeed             AnalysisModelSpeed
+	ModelUsage             []AnalysisModelUsage
+	APIKeyComposition      []AnalysisCompositionItem
+	ModelComposition       []AnalysisCompositionItem
+	AuthFilesComposition   []AnalysisCompositionItem
+	CredentialsComposition []AnalysisCompositionItem
+	AIProviderComposition  []AnalysisCompositionItem
+	Heatmap                []AnalysisHeatmapCell
+	CostBreakdown          AnalysisCostBreakdown
+	CostSummary            AnalysisCostSummary
+	ModelEfficiency        []AnalysisModelEfficiencyItem
 }

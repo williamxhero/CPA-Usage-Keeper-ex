@@ -215,6 +215,7 @@ func TestDualCostsHeatmapTotalsMergeCoverageWithoutUsingCounts(t *testing.T) {
 
 func TestDualCostsCSVExportAppendsFieldsAndPreservesNullVersusKnownZero(t *testing.T) {
 	stub := newDualCostsMappingStub()
+	stub.page.Events[0].EffectiveServiceTier = "CustomTier"
 	stub.page.Events = append(stub.page.Events, servicedto.UsageEventRecord{DualCosts: mappingUnavailableCosts()}, servicedto.UsageEventRecord{})
 	router := NewRouter(nil, nil, stub, nil, AuthConfig{}, nil, "")
 	response := serveAPIGet(router, "/api/v1/usage/events/export?format=csv&range=24h")
@@ -226,8 +227,9 @@ func TestDualCostsCSVExportAppendsFieldsAndPreservesNullVersusKnownZero(t *testi
 		t.Fatal(err)
 	}
 	legacy := strings.Split("id,timestamp,api_key,cpa_api_key_id,source,source_type,auth_index,is_identity_deleted,model,model_alias,response_model,reasoning_effort,service_tier,response_service_tier,executor_type,result,status_code,stream,endpoint,ttft_ms,latency_ms,speed_tps,client_ip,x_forwarded_for,user_agent,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_creation_tokens,cache_read_rate,total_tokens,cost_usd", ",")
-	if len(records) != 4 || len(records[0]) != len(legacy)+15 || !reflect.DeepEqual(records[0][:len(legacy)], legacy) {
-		t.Fatalf("CSV legacy prefix changed: %+v", records)
+	oldHeader := append(legacy, strings.Split("configured_total_cost_usd,configured_status,configured_uncached_input_cost_usd,configured_output_cost_usd,configured_cache_read_cost_usd,configured_cache_write_cost_usd,reference_total_cost_usd,reference_status,reference_uncached_input_cost_usd,reference_output_cost_usd,reference_cache_read_cost_usd,reference_cache_write_cost_usd,pricing_snapshot_id,pricing_selection,cost_available", ",")...)
+	if len(records) != 4 || len(records[0]) != len(oldHeader)+1 || !reflect.DeepEqual(records[0][:len(oldHeader)], oldHeader) || records[0][len(oldHeader)] != "effective_service_tier" {
+		t.Fatalf("CSV legacy prefix changed or upstream tier column was not additive: %+v", records)
 	}
 	indexes := map[string]int{}
 	for index, column := range records[0] {
@@ -238,7 +240,7 @@ func TestDualCostsCSVExportAppendsFieldsAndPreservesNullVersusKnownZero(t *testi
 		"configured_uncached_input_cost_usd": "0.123456789012345", "configured_output_cost_usd": "0", "configured_cache_read_cost_usd": "0", "configured_cache_write_cost_usd": "0",
 		"reference_total_cost_usd": "0.987654321098765", "reference_status": "partial", "reference_output_cost_usd": "0.987654321098765",
 		"reference_uncached_input_cost_usd": "0", "reference_cache_read_cost_usd": "0", "reference_cache_write_cost_usd": "0",
-		"pricing_snapshot_id": mappingSnapshotID, "cost_available": "true",
+		"pricing_snapshot_id": mappingSnapshotID, "cost_available": "true", "effective_service_tier": "CustomTier",
 	} {
 		index, ok := indexes[column]
 		if !ok || records[1][index] != want {

@@ -122,7 +122,7 @@ func seedUsageAggregationParityDatabase(t *testing.T, db *gorm.DB, now time.Time
 	for index := 1; index <= 27; index++ {
 		identity := fmt.Sprintf("parity-auth-%02d", index)
 		identities = append(identities, entities.UsageIdentity{
-			Name: identity, AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: identity, Type: "codex", IsDeleted: index%2 == 0,
+			Name: identity, AuthType: entities.UsageIdentityAuthTypeCredential, Identity: identity, Type: "codex", IsDeleted: index%2 == 0,
 		})
 	}
 	// 准备：事件循环复用 27 个 identity，并覆盖多 API group、model、alias、成功失败和全部旧 Token 字段。
@@ -143,7 +143,7 @@ func seedUsageAggregationParityDatabase(t *testing.T, db *gorm.DB, now time.Time
 		t.Fatalf("seed parity identities: %v", err)
 	}
 	// 准备：再写 usage events，确保两个数据库自增 ID 完全一致。
-	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents(events)); err != nil {
 		t.Fatalf("seed parity usage events: %v", err)
 	}
 }

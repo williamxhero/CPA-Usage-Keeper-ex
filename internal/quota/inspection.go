@@ -22,7 +22,7 @@ const (
 )
 
 type InspectionStatus struct {
-	// Total 来自当前仍有效且未禁用的 Auth Files 身份数量，不来自刷新缓存。
+	// Total 来自当前仍有效且未禁用的 Credentials 身份数量，不来自刷新缓存。
 	Total int `json:"total"`
 	// Cached 表示已经能从共享刷新缓存里解析出巡检结果的数量。
 	Cached int `json:"cached"`
@@ -38,7 +38,7 @@ type InspectionStatus struct {
 	PaymentRequired402 int        `json:"payment_required_402"`
 	Unauthorized401402 int        `json:"unauthorized_401_402"`
 	OtherFailed        int        `json:"other_failed"`
-	// Unknown 是 active Auth Files 中“没有可展示结果、也没有参与当前巡检刷新”的剩余数量。
+	// Unknown 是 active Credentials 中“没有可展示结果、也没有参与当前巡检刷新”的剩余数量。
 	Unknown int                `json:"unknown"`
 	Results []InspectionResult `json:"results"`
 }
@@ -59,26 +59,30 @@ func (s *Service) StartInspection(ctx context.Context) (InspectionStatus, error)
 	if s == nil || s.db == nil {
 		return InspectionStatus{}, nil
 	}
-	// now 作为本轮启动时间，后续清理过期任务和扫描 Auth Files 都复用同一时间点。
+	// now 作为本轮启动时间，后续清理过期任务和扫描 Credentials 都复用同一时间点。
 	now := time.Now()
-	// 巡检开始前先清掉已完成/已失败的旧任务，避免上轮缓存立刻把本轮算成完成。
-	s.clearSettledRefreshTasks()
-	// 重置 completed_at 和本轮 auth_index 集合；只有这次按钮触发的任务能写回巡检完成时间。
-	s.resetInspectionRound()
+	// 清旧终态和开始新轮次必须同锁，避免清理代数插在两步之间。
+	generation := s.beginInspectionRound()
 	// 过期的短期失败任务可以在本轮重新入队，未过期的长期成功缓存已在上一步清掉。
 	s.cleanupExpiredRefreshTasks(now)
-	// 巡检复用 Auth Files 自动刷新扫描规则，但 source 必须标成 inspection 以便后续区分运行态。
-	summary, err := s.queueAuthFileRefreshRound(ctx, now, authFileRefreshRoundOptions{
+	// 巡检复用 Credentials 自动刷新扫描规则，但 source 必须标成 inspection 以便后续区分运行态。
+	summary, err := s.queueCredentialRefreshRound(ctx, now, credentialRefreshRoundOptions{
 		// source 是巡检状态机的边界：只有 inspection 轮次中的任务能驱动 running/completed_at。
 		source: RefreshSourceInspection,
 		// 巡检是用户显式检查，401/402 这类缓存错误也要重新尝试，不能被自动刷新缓存拦住。
 		skipCachedHTTPError: false,
+		expectedGeneration:  &generation,
 	})
 	if err != nil {
 		return InspectionStatus{}, err
 	}
+	if summary.invalidated {
+		return s.GetInspectionStatus(ctx)
+	}
 	// 记录本轮参与巡检的 auth_index：包含新入队任务和同来源 inspection active 任务，不包含 manual/auto/unsupported。
-	s.setInspectionRoundAuthIndexes(summary.roundAuthIndexes)
+	if !s.setInspectionRoundAuthIndexes(generation, summary.roundAuthIndexes) {
+		return s.GetInspectionStatus(ctx)
+	}
 	// 没有新任务时也要返回状态；这可能代表全部 unsupported、或已有任务正在被本轮复用。
 	if len(summary.queuedTasks) > 0 {
 		// dispatcher 会按全局 worker 限制派发，避免一次巡检把所有 provider 同时打满。
@@ -98,8 +102,8 @@ func (s *Service) GetInspectionStatus(ctx context.Context) (InspectionStatus, er
 	if s == nil || s.db == nil {
 		return InspectionStatus{}, nil
 	}
-	// total 必须来自 UsageIdentity 中仍有效的 Auth Files，不能从刷新缓存反推。
-	identities, err := s.listAutoRefreshAuthFiles(ctx)
+	// total 必须来自 UsageIdentity 中仍有效的 Credentials，不能从刷新缓存反推。
+	identities, err := s.listAutoRefreshCredentials(ctx)
 	if err != nil {
 		return InspectionStatus{}, err
 	}
@@ -113,7 +117,7 @@ func (s *Service) GetInspectionStatus(ctx context.Context) (InspectionStatus, er
 	defer s.refreshMu.Unlock()
 	// activeInspectionTasks 只统计当前显式巡检轮次还没完成的任务，手动/自动任务不进入这里。
 	activeInspectionTasks := 0
-	// 逐个 Auth File 身份对照共享刷新缓存；没有缓存的身份最后会落到 unknown。
+	// 逐个 Credential 身份对照共享刷新缓存；没有缓存的身份最后会落到 unknown。
 	for _, identity := range identities {
 		// 刷新任务在入队时会 trim auth_index；状态读取也必须使用同一口径，否则旧数据或绕过写入层的数据会查不到缓存。
 		authIndex := strings.TrimSpace(identity.Identity)
@@ -206,39 +210,36 @@ func (s *Service) inspectionRoundActiveTaskLocked(authIndex string, task *Refres
 	return ok
 }
 
-func (s *Service) clearSettledRefreshTasks() {
+// beginInspectionRound 在同一锁内清理旧终态并固定本轮代数，避免清理穿过巡检启动。
+func (s *Service) beginInspectionRound() uint64 {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
+	// 新巡检不复用上轮完成/失败缓存，也不提前报告 completed_at。
 	for authIndex, task := range s.refreshTasks {
 		if task == nil || task.isActive() {
 			continue
 		}
 		delete(s.refreshTasks, authIndex)
 	}
-}
-
-func (s *Service) resetInspectionRound() {
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
 	s.inspectionCompletedAt = time.Time{}
 	s.inspectionRoundActive = false
 	s.inspectionRoundAuthIndexSet = nil
+	return s.cacheGeneration
 }
 
-func (s *Service) resetInspectionCompletedAt() {
+// setInspectionRoundAuthIndexes 只激活未被费用清理淘汰的巡检轮次，防止旧扫描复活。
+func (s *Service) setInspectionRoundAuthIndexes(generation uint64, authIndexes []string) bool {
 	s.refreshMu.Lock()
 	defer s.refreshMu.Unlock()
-	s.inspectionCompletedAt = time.Time{}
-}
-
-func (s *Service) setInspectionRoundAuthIndexes(authIndexes []string) {
-	s.refreshMu.Lock()
-	defer s.refreshMu.Unlock()
+	if s.cacheGeneration != generation {
+		return false
+	}
 	s.inspectionRoundActive = true
 	s.inspectionRoundAuthIndexSet = make(map[string]struct{}, len(authIndexes))
 	for _, authIndex := range authIndexes {
 		s.inspectionRoundAuthIndexSet[authIndex] = struct{}{}
 	}
+	return true
 }
 
 func (s *Service) inspectionRoundCompletedLocked() bool {
@@ -319,7 +320,7 @@ func inspectionFailedResultStatus(statusCode *int) InspectionResultStatus {
 }
 
 func inspectionQuotaLimitReached(identity entities.UsageIdentity, task *RefreshTaskRecord, rows []QuotaRow) bool {
-	// provider 类型只认已知 Auth File 类型；generic/unknown 不做猜测，避免误判。
+	// provider 类型只认已知 Credential 类型；generic/unknown 不做猜测，避免误判。
 	switch inspectionQuotaProvider(identity, task) {
 	case "codex":
 		return codexInspectionLimitReached(rows)
@@ -408,6 +409,10 @@ func kimiInspectionLimitReached(rows []QuotaRow) bool {
 func xaiInspectionLimitReached(rows []QuotaRow) bool {
 	// 新 xAI 行的显式 false 代表仍有其它额度（例如 PAYG）；旧缓存没有标志时才回退 used/limit。
 	for _, row := range rows {
+		// 兼容旧结果：产品构成不参与账号限额判断。
+		if row.Scope == "product" || strings.HasPrefix(row.Key, "billing.weekly.product.") {
+			continue
+		}
 		if row.LimitReached != nil {
 			if *row.LimitReached {
 				return true

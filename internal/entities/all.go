@@ -20,14 +20,15 @@ func All() []any {
 		&CredentialModelMultiplier{},
 		&CredentialModelPriceOverride{},
 		&ChannelModelPrice{},
+		&PricingState{},
+		&PricingMigrationState{},
 		&UsageIdentity{},
 		&CPAAPIKey{},
+		&LocalRankingPeriodStat{},
 		&UsageOverviewHourlyStat{},
 		&UsageOverviewDailyStat{},
 		// 全局聚合只注册一张通用 checkpoint 表；旧类型仅供历史 migration 编译。
 		&UsageAggregationCheckpoint{},
-		// 本地排行只保留 API Key 的今日、昨日、本月和上月累计。
-		&LocalRankingPeriodStat{},
 		// Activity 统计必须随全新数据库直接创建。
 		&UsageActivityStat{},
 		// Latency hour/day 共用一张可合并聚合表。

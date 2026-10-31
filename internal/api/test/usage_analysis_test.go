@@ -54,9 +54,9 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 			CostUSD:       1.23,
 			CostAvailable: true,
 		}},
-		AuthFilesComposition: []servicedto.AnalysisCompositionItem{{
-			Key:           "auth-file-1",
-			Label:         "Auth File One",
+		CredentialsComposition: []servicedto.AnalysisCompositionItem{{
+			Key:           "credential-1",
+			Label:         "Credential One",
 			TotalTokens:   30,
 			Requests:      1,
 			CostUSD:       0.8,
@@ -83,13 +83,13 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 			CostUSD:             1.23,
 			CostAvailable:       true,
 		}},
+		CostSummary: servicedto.AnalysisCostSummary{
+			TotalCostUSD:  1.23,
+			CostAvailable: true,
+		},
 		CostBreakdown: servicedto.AnalysisCostBreakdown{
-			UncachedInputCostUSD: 0.3,
-			CacheReadCostUSD:     0.03,
-			CacheWriteCostUSD:    0.10,
-			OutputCostUSD:        0.8,
-			TotalCostUSD:         1.23,
-			CostAvailable:        true,
+			TotalCostUSD:  1.23,
+			CostAvailable: true,
 		},
 		ModelEfficiency: []servicedto.AnalysisModelEfficiencyItem{{
 			Model:                  "claude-sonnet",
@@ -120,14 +120,14 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 	if !strings.Contains(body, `"cost_usd":1.23`) || !strings.Contains(body, `"cost_available":true`) {
 		t.Fatalf("expected token/composition cost fields in response body: %s", body)
 	}
-	if !strings.Contains(body, `"api_key_composition":[`) || !strings.Contains(body, `"model_composition":[`) || !strings.Contains(body, `"auth_files_composition":[`) || !strings.Contains(body, `"ai_provider_composition":[`) {
+	if !strings.Contains(body, `"api_key_composition":[`) || !strings.Contains(body, `"model_composition":[`) || !strings.Contains(body, `"credentials_composition":[`) || !strings.Contains(body, `"ai_provider_composition":[`) {
 		t.Fatalf("expected composition payloads in response body: %s", body)
 	}
 	if !strings.Contains(body, `"key":"sk-*********123456"`) || !strings.Contains(body, `"label":"sk-*********123456"`) {
 		t.Fatalf("expected redacted api key composition in response body: %s", body)
 	}
-	if !strings.Contains(body, `"key":"aut*********file-1"`) || !strings.Contains(body, `"label":"Auth File One"`) || !strings.Contains(body, `"percent":100`) {
-		t.Fatalf("expected auth file composition in response body: %s", body)
+	if !strings.Contains(body, `"key":"cre*********tial-1"`) || !strings.Contains(body, `"label":"Credential One"`) || !strings.Contains(body, `"percent":100`) {
+		t.Fatalf("expected credential composition in response body: %s", body)
 	}
 	if !strings.Contains(body, `"key":"pro*********ider-1"`) || !strings.Contains(body, `"label":"Provider One"`) {
 		t.Fatalf("expected ai provider composition in response body: %s", body)
@@ -135,8 +135,27 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 	if !strings.Contains(body, `"model":"claude-sonnet"`) || !strings.Contains(body, `"intensity":1`) || !strings.Contains(body, `"input_tokens":30`) || !strings.Contains(body, `"reasoning_tokens":2`) {
 		t.Fatalf("expected heatmap cell in response body: %s", body)
 	}
-	if !strings.Contains(body, `"cost_breakdown":`) || !strings.Contains(body, `"uncached_input_cost_usd":0.3`) || !strings.Contains(body, `"cache_read_cost_usd":0.03`) || !strings.Contains(body, `"cache_write_cost_usd":0.1`) || !strings.Contains(body, `"total_cost_usd":1.23`) {
-		t.Fatalf("expected cost breakdown in response body: %s", body)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode Analysis response: %v", err)
+	}
+	var costSummary map[string]json.RawMessage
+	if err := json.Unmarshal(payload["cost_breakdown"], &costSummary); err != nil {
+		t.Fatalf("decode current cost breakdown: %v", err)
+	}
+	var totalCost float64
+	if err := json.Unmarshal(costSummary["total_cost_usd"], &totalCost); err != nil {
+		t.Fatalf("decode total cost: %v", err)
+	}
+	var costAvailable bool
+	if err := json.Unmarshal(costSummary["cost_available"], &costAvailable); err != nil {
+		t.Fatalf("decode cost availability: %v", err)
+	}
+	if !overviewAPICostClose(totalCost, 1.23) || !costAvailable || costSummary["dual_costs"] == nil || costSummary["pricing_snapshot_id"] == nil {
+		t.Fatalf("unexpected current cost breakdown: %s", payload["cost_breakdown"])
+	}
+	if _, exists := payload["cost_summary"]; exists {
+		t.Fatalf("stored summary leaked into current Analysis response: %s", resp.Body.String())
 	}
 	if !strings.Contains(body, `"model_efficiency":`) || !strings.Contains(body, `"cost_per_request_usd":0.615`) || !strings.Contains(body, `"output_tokens_per_request":5.5`) || !strings.Contains(body, `"cache_read_rate":0.03333333333333333`) {
 		t.Fatalf("expected model efficiency in response body: %s", body)
@@ -152,6 +171,53 @@ func TestUsageAnalysisReturnsAggregatedRows(t *testing.T) {
 	}
 	if provider.analysisFilter.StartTime == nil || provider.analysisFilter.EndTime == nil {
 		t.Fatalf("expected resolved time bounds in filter, got %+v", provider.analysisFilter)
+	}
+
+	// Preserve the original historical summary and amounts at the real stored
+	// service seam, not by changing ordinary HTTP back to stored valuation.
+	db := openAPITestDatabase(t)
+	if err := db.Create(&entities.CPAAPIKey{ID: 42, APIKey: "sk-provider123456"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	identities := []entities.UsageIdentity{
+		{Name: "Credential One", AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "credential-1"},
+		{Name: "Provider One", AuthType: entities.UsageIdentityAuthTypeAIProvider, Identity: "provider-1"},
+	}
+	if err := db.Create(&identities).Error; err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now().Truncate(time.Hour).Add(-2 * time.Hour)
+	credentialCost, providerCost, unavailable := 0.8, 0.43, int64(0)
+	rows := []entities.UsageOverviewHourlyStat{
+		{BucketStart: at, APIGroupKey: "sk-provider123456", Model: "claude-sonnet", AuthIndex: "credential-1", RequestCount: 1, SuccessCount: 1, InputTokens: 22, OutputTokens: 7, CacheReadTokens: 1, CacheCreationTokens: 2, ReasoningTokens: 1, TotalTokens: 30, CostUSD: &credentialCost, UnavailableCostCount: &unavailable},
+		{BucketStart: at, APIGroupKey: "sk-provider123456", Model: "claude-sonnet", AuthIndex: "provider-1", RequestCount: 1, SuccessCount: 1, InputTokens: 8, OutputTokens: 2, ReasoningTokens: 1, TotalTokens: 12, CostUSD: &providerCost, UnavailableCostCount: &unavailable},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	start, end := at.Add(-time.Hour), at.Add(time.Hour)
+	stored, err := service.NewStoredUsageAnalysisService(db).GetStoredAnalysis(context.Background(), servicedto.StoredAnalysisFilter{Range: "24h", StartTime: &start, EndTime: &end, EndExclusive: true, APIKeyID: "42"})
+	if err != nil || stored == nil {
+		t.Fatalf("real stored analysis failed: %+v %v", stored, err)
+	}
+	encoded, err := json.Marshal(stored.CostSummary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var summaryFields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &summaryFields); err != nil || len(summaryFields) != 2 || !overviewAPICostClose(stored.CostSummary.TotalCostUSD, 1.23) || !stored.CostSummary.CostAvailable {
+		t.Fatalf("stored summary lost original two-field monetary contract: %s %v", encoded, err)
+	}
+	if len(stored.TokenUsage) != 1 || stored.TokenUsage[0].TotalTokens != 42 || stored.TokenUsage[0].Requests != 2 || stored.TokenUsage[0].InputTokens != 30 || stored.TokenUsage[0].OutputTokens != 9 || stored.TokenUsage[0].ReasoningTokens != 2 || stored.TokenUsage[0].CacheReadTokens != 1 || stored.TokenUsage[0].CacheCreationTokens != 2 || !overviewAPICostClose(stored.TokenUsage[0].CostUSD, 1.23) || !stored.TokenUsage[0].CostAvailable {
+		t.Fatalf("stored token facts/cost changed: %+v", stored.TokenUsage)
+	}
+	if len(stored.CredentialsComposition) != 1 || stored.CredentialsComposition[0].TotalTokens != 30 || stored.CredentialsComposition[0].Requests != 1 || !overviewAPICostClose(stored.CredentialsComposition[0].CostUSD, 0.8) || !stored.CredentialsComposition[0].CostAvailable || len(stored.AIProviderComposition) != 1 || stored.AIProviderComposition[0].TotalTokens != 12 || stored.AIProviderComposition[0].Requests != 1 || !overviewAPICostClose(stored.AIProviderComposition[0].CostUSD, 0.43) || !stored.AIProviderComposition[0].CostAvailable {
+		t.Fatalf("stored typed composition amounts changed: %+v %+v", stored.CredentialsComposition, stored.AIProviderComposition)
+	}
+	// The original stub's 5.5 mapping assertion remains above. Real persisted
+	// output is canonical (already includes reasoning), so 9 / 2 is 4.5.
+	if len(stored.ModelEfficiency) != 1 || !overviewAPICostClose(stored.ModelEfficiency[0].CostUSD, 1.23) || !stored.ModelEfficiency[0].CostAvailable || !overviewAPICostClose(stored.ModelEfficiency[0].CostPerRequestUSD, 0.615) || stored.ModelEfficiency[0].OutputTokensPerRequest != 4.5 || !overviewAPICostClose(stored.ModelEfficiency[0].CacheReadRate, 1.0/30.0) {
+		t.Fatalf("stored model efficiency changed: %+v", stored.ModelEfficiency)
 	}
 }
 

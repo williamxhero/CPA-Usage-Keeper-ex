@@ -9,13 +9,9 @@ export const emptyAnalysis: AnalysisResponse = {
   token_usage: [],
   api_key_composition: [],
   model_composition: [],
-  auth_files_composition: [],
+  credentials_composition: [],
   ai_provider_composition: [],
-  cost_breakdown: {
-    uncached_input_cost_usd: 0,
-    output_cost_usd: 0,
-    cache_read_cost_usd: 0,
-    cache_write_cost_usd: 0,
+  cost_summary: {
     total_cost_usd: 0,
     cost_available: true,
   },

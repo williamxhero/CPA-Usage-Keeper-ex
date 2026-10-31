@@ -221,6 +221,8 @@ export function Modal({
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
     const focusTimer = window.setTimeout(() => {
+      // 表单校验或用户已把焦点放进弹窗时，延迟的初始聚焦不能再覆盖它。
+      if (modalRef.current?.contains(document.activeElement)) return;
       const firstFocusable = getFocusableElements()[0];
       (firstFocusable ?? closeButtonRef.current ?? modalRef.current)?.focus();
     }, 0);

@@ -3,16 +3,19 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
 	"cpa-usage-keeper/internal/config"
 	"cpa-usage-keeper/internal/cpa"
 	"cpa-usage-keeper/internal/entities"
+	"cpa-usage-keeper/internal/helper"
 	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/quota"
 	"cpa-usage-keeper/internal/repository"
 	repositorydto "cpa-usage-keeper/internal/repository/dto"
+	"cpa-usage-keeper/internal/repository/storedpricing"
 	"cpa-usage-keeper/internal/service/tokenprocessor"
 	"cpa-usage-keeper/internal/timeutil"
 
@@ -25,6 +28,11 @@ import (
 // RecentUsageEventAppender 接收已提交入库的 usage_events，供最近窗口纯内存缓存异步维护。
 type RecentUsageEventAppender interface {
 	TryAppend([]entities.UsageEvent) bool
+}
+
+// recentUsageAcceptedDrainer 只等待停稳前已接受的异步缓存追加完成，不关闭共享缓存或清理健康桶。
+type recentUsageAcceptedDrainer interface {
+	DrainAcceptedAppends(context.Context) error
 }
 
 // UsageAggregationNotifier 把已提交 usage 或 identity 变化转成后台 runner 的非阻塞唤醒。
@@ -41,6 +49,11 @@ type UsageHeaderSnapshotAppender interface {
 	TryAppendUsageHeaderSnapshots([]*quota.UsageHeaderSnapshot) bool
 }
 
+// PluginAPIKeyNotifier 只接受提交成功的轻量第三方身份，不接收事件或数据库水位。
+type PluginAPIKeyNotifier interface {
+	NotifyPluginAPIKeys([]entities.PluginAPIKeyIdentity)
+}
+
 const (
 	redisInboxProcessLimit                = 1000
 	redisUsageIdentityTypeLookupBatchSize = 500
@@ -53,21 +66,26 @@ const (
 
 // SyncService 负责同步 CPA metadata，并处理已经落入本地 inbox 的 usage 原始消息。
 type SyncService struct {
-	usageRawRetentionDays int
+	usageWork             usageWorkGate
 	db                    *gorm.DB
 	client                CPAClientFetcher
 	metadataFetcher       MetadataFetcher
+	credentialMetadata    *CredentialMetadataCoordinator
 	baseURL               string
 	now                   func() time.Time
 	recentUsage           RecentUsageEventAppender
+	pricingCatalog        *pricing.Catalog
+	storedPricing         *storedpricing.Store
+	usageRawRetentionDays int
 	// usageAggregation 只接收提交后通知，不允许热路径同步调用聚合仓储函数。
 	usageAggregation UsageAggregationNotifier
 	// usageHeaderQuota 与聚合 runner 解耦，在 Quota worker 内按一分钟窗口自行合并。
 	usageHeaderQuota UsageHeaderSnapshotAppender
-	pricingCatalog   *pricing.Catalog
+	pluginAPIKeys    PluginAPIKeyNotifier
 }
 
-// NewSyncService 按生产配置组装 CPA metadata client；远端 usage 拉取由 poller 独立负责。
+// NewSyncService 按配置组装 metadata／维护服务；远端 usage 拉取由 poller 独立负责。
+// 需要消费 inbox 的调用方使用 NewSyncServiceWithOptions 显式注入共享 PricingCatalog。
 func NewSyncService(db *gorm.DB, cfg config.Config) *SyncService {
 	return NewSyncServiceWithOptions(db, SyncServiceOptions{
 		BaseURL:               cfg.CPABaseURL,
@@ -78,20 +96,27 @@ func NewSyncService(db *gorm.DB, cfg config.Config) *SyncService {
 
 // SyncServiceOptions 提供测试和局部调用需要替换的依赖。
 type SyncServiceOptions struct {
+	BaseURL         string
+	Client          CPAClientFetcher
+	MetadataFetcher MetadataFetcher
+	// CredentialMetadata 与凭据修改服务共享；未注入时兼容独立同步调用。
+	CredentialMetadata *CredentialMetadataCoordinator
+	Now                func() time.Time
+	RecentUsageEvents  RecentUsageEventAppender
+	// PricingCatalog 与价格保存服务共享，消费批次只从中固定一次只读快照。
+	PricingCatalog *pricing.Catalog
+	// StoredPricing is the explicit independent fee source for new events only.
+	StoredPricing         *storedpricing.Store
 	UsageRawRetentionDays int
-	BaseURL               string
-	Client                CPAClientFetcher
-	MetadataFetcher       MetadataFetcher
-	Now                   func() time.Time
-	RecentUsageEvents     RecentUsageEventAppender
 	// UsageAggregationNotifier 注入 App 唯一的单 writer runner。
 	UsageAggregationNotifier UsageAggregationNotifier
 	// UsageHeaderQuota 独立接收原始 Header；是否配置聚合 notifier 不影响它。
 	UsageHeaderQuota UsageHeaderSnapshotAppender
-	PricingCatalog   *pricing.Catalog
+	PluginAPIKeys    PluginAPIKeyNotifier
 }
 
 // NewSyncServiceWithOptions 是统一构造入口，负责填充默认时钟和 metadata fetcher。
+// 仅 metadata／维护调用可不注入价格；事件消费必须与价格保存服务共享同一个 Catalog。
 func NewSyncServiceWithOptions(db *gorm.DB, opts SyncServiceOptions) *SyncService {
 	now := opts.Now
 	if now == nil {
@@ -103,17 +128,20 @@ func NewSyncServiceWithOptions(db *gorm.DB, opts SyncServiceOptions) *SyncServic
 	}
 	return &SyncService{
 		db:                    db,
-		usageRawRetentionDays: opts.UsageRawRetentionDays,
 		client:                opts.Client,
 		metadataFetcher:       metadataFetcher,
+		credentialMetadata:    opts.CredentialMetadata,
 		baseURL:               strings.TrimSpace(opts.BaseURL),
 		now:                   now,
 		recentUsage:           opts.RecentUsageEvents,
+		pricingCatalog:        opts.PricingCatalog,
+		storedPricing:         opts.StoredPricing,
+		usageRawRetentionDays: opts.UsageRawRetentionDays,
 		// 构造时只保存 notifier 接口，不启动额外 goroutine。
 		usageAggregation: opts.UsageAggregationNotifier,
 		// Header appender 始终独立于聚合 notifier，生产 App 会同时注入两个接收方。
 		usageHeaderQuota: opts.UsageHeaderQuota,
-		pricingCatalog:   opts.PricingCatalog,
+		pluginAPIKeys:    opts.PluginAPIKeys,
 	}
 }
 
@@ -127,10 +155,21 @@ func NewSyncServiceWithClient(db *gorm.DB, baseURL string, client CPAClientFetch
 
 // ProcessRedisUsageInbox 是 Redis 同步的本地处理阶段：只读取 pending/process_failed inbox 行并写入 usage_events。
 // 成功处理后仅用 usage_event_key 记录 inbox 与最终事件的关联。
+// 每批归一化后固定价格快照，USD 总费用／可用性随事件与 processed 标记原子提交，通知仅在提交后发送。
+// 未注入 Catalog 属于装配错误，在读取 inbox 前返回，不把它当作缺价或消耗消息重试次数。
 func (s *SyncService) ProcessRedisUsageInbox(ctx context.Context) (*servicedto.RedisBatchSyncResult, error) {
 	if err := s.validate(syncMetadataOptional); err != nil {
 		return nil, err
 	}
+	if s.pricingCatalog == nil {
+		return nil, fmt.Errorf("sync service pricing catalog is nil")
+	}
+	// 许可从读待处理 inbox 前持有到事务提交后的 recent、聚合和 Header 通知返回；暂停不会改写重试状态。
+	leave, err := s.usageWork.enter(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer leave()
 	// 本操作虽然从 SELECT pending inbox 开始，但它决定随后 usage_events 与 processed 状态的原子写入。
 	// 使用局部 Write scope 让列表、identity 解析、失败回读和事务都只依赖唯一 writer；普通页面查询仍自动走 reader。
 	// Write clause 后重新创建 session，既保留 writer 选择，又保证每个仓储调用从干净 Statement 开始，不继承上一条查询条件。
@@ -185,12 +224,40 @@ func (s *SyncService) ProcessRedisUsageInbox(ctx context.Context) (*servicedto.R
 	return s.processRedisInboxRows(ctx, writeDB, processableRows, fetchedAt)
 }
 
+// PauseUsageWork 停稳本服务的事件处理和存储维护，并排空此前已接受的 recent 缓存追加。
+// 返回的 resume 必须在重算结束或失败后调用；取消等待会自动恢复许可，不留下跨任务暂停状态。
+func (s *SyncService) PauseUsageWork(ctx context.Context) (func(), error) {
+	if err := s.validate(syncMetadataOptional); err != nil {
+		return nil, err
+	}
+	resume, err := s.usageWork.pause(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if drainer, ok := s.recentUsage.(recentUsageAcceptedDrainer); ok {
+		if err := drainer.DrainAcceptedAppends(ctx); err != nil {
+			resume()
+			return nil, fmt.Errorf("drain accepted recent usage appends: %w", err)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		resume()
+		return nil, err
+	}
+	return resume, nil
+}
+
 // CleanupRedisUsageInbox 只清理 Redis inbox 表，供测试和单独维护入口使用；每日任务使用 CleanupStorage 统一执行。
 func (s *SyncService) CleanupRedisUsageInbox(ctx context.Context) error {
 	if err := s.validate(syncMetadataOptional); err != nil {
 		return err
 	}
-	_, err := repository.CleanupRedisUsageInbox(s.db, s.now())
+	leave, err := s.usageWork.enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer leave()
+	_, err = repository.CleanupRedisUsageInbox(s.db.WithContext(ctx), s.now())
 	return err
 }
 
@@ -199,6 +266,11 @@ func (s *SyncService) CleanupStorage(ctx context.Context) error {
 	if err := s.validate(syncMetadataOptional); err != nil {
 		return err
 	}
+	leave, err := s.usageWork.enter(ctx)
+	if err != nil {
+		return err
+	}
+	defer leave()
 	result, err := repository.CleanupStorage(s.db.WithContext(ctx), s.now(), s.usageRawRetentionDays)
 	entry := logrus.WithFields(logrus.Fields{
 		"redis_processed_deleted":      result.RedisInbox.ProcessedDeleted,
@@ -271,6 +343,8 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 	readyEvents := make([]entities.UsageEvent, 0, len(events))
 	// headerSnapshots 只保存解码阶段创建的同一快照指针，不复制结构体或嵌套 quota 投影。
 	headerSnapshots := make([]*quota.UsageHeaderSnapshot, 0, len(events))
+	pluginIdentities := make([]entities.PluginAPIKeyIdentity, 0)
+	pluginKeysSeen := make(map[string]struct{})
 	for index, item := range normalizedItems {
 		// ready=false 的槽位依赖失败的 identity 查询，不能按 default 猜测入库。
 		if !item.ready {
@@ -279,6 +353,13 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 		// normalizedItems 与原 validRows/events/eventSnapshots 使用同一索引，事务关联不会串行。
 		readyRows = append(readyRows, validRows[index])
 		readyEvents = append(readyEvents, item.event)
+		if s.pluginAPIKeys != nil && item.event.IsNativeKey != nil && !*item.event.IsNativeKey &&
+			item.event.AccessProvider != nil && helper.IsPluginAccessProvider(*item.event.AccessProvider) {
+			if _, exists := pluginKeysSeen[item.event.APIGroupKey]; !exists && helper.IsPluginAPIKeyGroupKey(item.event.APIGroupKey) {
+				pluginKeysSeen[item.event.APIGroupKey] = struct{}{}
+				pluginIdentities = append(pluginIdentities, entities.PluginAPIKeyIdentity{APIGroupKey: item.event.APIGroupKey, AccessProvider: *item.event.AccessProvider})
+			}
+		}
 		if eventSnapshots[index] != nil {
 			// 只收集已准备入库事件的 snapshot，unresolved snapshot 不得提前通知 quota worker。
 			headerSnapshots = append(headerSnapshots, eventSnapshots[index])
@@ -306,6 +387,26 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 	// 后续事务只处理 ready 子集；成功行一旦提交就不会在 unresolved 重试时重复入库。
 	validRows = readyRows
 	events = readyEvents
+	// Current public costs remain read-time valuations. Only an explicitly wired
+	// stored catalog may initialize persisted fees for this new-event batch.
+	// No historical event is replayed, and the current catalog is never a fallback.
+	if s.storedPricing != nil {
+		feeResolver := s.storedPricing.NewResolver()
+		for index := range events {
+			fee := feeResolver.CalculateFee(repository.UsageEventCostSubject(events[index]))
+			if math.IsNaN(fee.TotalCostUSD) || math.IsInf(fee.TotalCostUSD, 0) {
+				feeErr := fmt.Errorf("calculate stored usage event fee: non-finite amount")
+				readyFailures := markRedisInboxRowsProcessFailed(writeDB, validRows, feeErr)
+				failureCounts = failureCounts.add(readyFailures)
+				failureResult := newRedisBatchSyncResult("failed", processedRows)
+				failureResult.RetryPending = failureCounts.requiresRetryWait()
+				failureResult.DiscardedRows = failureCounts.discarded
+				return failureResult, joinErrors(decodeErr, typeErr, feeErr)
+			}
+			events[index].CostUSD = &fee.TotalCostUSD
+			events[index].CostAvailable = &fee.Available
+		}
+	}
 
 	// usage_events 入库和 inbox processed 标记必须同事务提交，避免标记失败后同一 inbox 重试造成重复事件。
 	logrus.WithField("event_count", len(events)).Debug("redis usage events persistence started")
@@ -344,6 +445,10 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 	// 事务已经同时提交 usage_events 与对应 inbox processed，只有此时事件级 Token 日志才代表真实入库事件。
 	logCommittedTokenProcessingEvents(normalizedItems)
 	if result.InsertedEvents > 0 {
+		if s.pluginAPIKeys != nil && len(pluginIdentities) > 0 {
+			// 独立切片只包含真正提交的 ready 事件身份；登记失败不影响用量提交。
+			s.pluginAPIKeys.NotifyPluginAPIKeys(append([]entities.PluginAPIKeyIdentity(nil), pluginIdentities...))
+		}
 		// usage_events 事务已经提交后才通知最近事件缓存，避免缓存看到未落库的数据。
 		if s.recentUsage != nil && !s.recentUsage.TryAppend(events) {
 			// 缓存队列满只影响 realtime/边界缓存的新鲜度，不能反向阻塞或回滚写入链路。
@@ -358,6 +463,9 @@ func (s *SyncService) processRedisInboxRows(ctx context.Context, writeDB *gorm.D
 			if aggregateErr := s.aggregateUsageEventStatsFallback(ctx, writeDB, timeutil.NormalizeStorageTime(s.now())); aggregateErr != nil {
 				logTokenProcessingBatch(normalizedItems, "failed", processedRows, result.InsertedEvents, len(decodeErrs), failureCounts)
 				failureResult := newRedisBatchSyncResult("failed", processedRows)
+				// The facts/inbox transaction has committed; aggregation failure is not rollback.
+				failureResult.InsertedEvents = result.InsertedEvents
+				failureResult.DedupedEvents = result.DedupedEvents
 				failureResult.RetryPending = failureCounts.requiresRetryWait()
 				failureResult.DiscardedRows = failureCounts.discarded
 				return failureResult, aggregateErr
@@ -439,8 +547,8 @@ func normalizeRedisUsageEventsDetailed(ctx context.Context, db *gorm.DB, events 
 	unresolvedIndexes := make([]int, 0)
 	unresolvedEvents := make([]entities.UsageEvent, 0)
 	for index, event := range events {
-		// executor 先描述本次真实 CPA parser；已知类型无需读取凭证 identity。
-		resolution, err := tokenprocessor.ResolveExecutor(event.ExecutorType)
+		// 已知 executor 保持原合同；未匹配时先尝试完整 accounting，再查询凭证 identity。
+		resolution, err := tokenprocessor.ResolveExecutorWithBreakdown(event.ExecutorType, tokenValuesFromUsageEvent(event), event.AccountingVersion, event.TokenBreakdown)
 		if err != nil {
 			// registry 错误影响全部事件，返回所有索引让调用方按 process_failed 保守处理。
 			allIndexes := make([]int, len(events))
@@ -452,17 +560,17 @@ func normalizeRedisUsageEventsDetailed(ctx context.Context, db *gorm.DB, events 
 		// unresolved 槽位也保存初始 resolution，identity 查询失败时仍能统计和记录 unknown executor。
 		items[index] = normalizedUsageEvent{event: event, resolution: resolution}
 		if resolution.NeedsIdentity() {
-			// 只有空、unknown 或未注册 executor 才进入现有联合键 identity 批量查询。
+			// 只有 executor 未匹配且 accounting 不可用时才进入原有联合键 identity 批量查询。
 			unresolvedIndexes = append(unresolvedIndexes, index)
 			unresolvedEvents = append(unresolvedEvents, event)
 			continue
 		}
-		// 已知 executor 立即完成纯 Token 处理，identity 查询失败也不能回滚这条 ready 结果。
+		// executor 或完整 accounting 已解决的事件立即处理，不受其它事件的 identity 查询失败影响。
 		items[index] = processResolvedUsageEvent(event, resolution)
 	}
 
 	if len(unresolvedEvents) == 0 {
-		// 全部事件都由 executor 证明时完全跳过 usage_identities 查询。
+		// 全部事件已解决时完全跳过 usage_identities 查询。
 		return items, nil, nil
 	}
 	// unresolved 仍按 auth_type+auth_index、active→deleted、每组 500 条执行现有批量查询。
@@ -536,6 +644,9 @@ func applyTokenProcessResult(event entities.UsageEvent, result tokenprocessor.Pr
 	event.CacheReadTokens = result.Tokens.CacheReadTokens
 	event.CacheCreationTokens = result.Tokens.CacheCreationTokens
 	event.TotalTokens = result.Tokens.TotalTokens
+	// 下游通知只接收最终统一字段，避免携带已消费的原始 accounting 或再次应用它。
+	event.AccountingVersion = nil
+	event.TokenBreakdown = nil
 	return event
 }
 
@@ -735,7 +846,7 @@ func redisUsageIdentityKeys(events []entities.UsageEvent) []usageEventIdentityKe
 func redisUsageIdentityAuthType(authType string) (entities.UsageIdentityAuthType, bool) {
 	switch normalizeRedisAuthType(authType) {
 	case "oauth":
-		return entities.UsageIdentityAuthTypeAuthFile, true
+		return entities.UsageIdentityAuthTypeCredential, true
 	case "apikey":
 		return entities.UsageIdentityAuthTypeAIProvider, true
 	default:
@@ -762,12 +873,12 @@ func missingRedisUsageIdentityKeys(keys []usageEventIdentityKey, byIdentity map[
 	return missing
 }
 
-// OAuth 优先信任已同步的 auth file type；查不到时再沿用历史 provider 兜底。
+// OAuth 优先信任已同步的 credential type；查不到时再沿用历史 provider 兜底。
 func resolveUsageEventType(event entities.UsageEvent, resolver usageEventTypeResolver) string {
 	switch normalizeRedisAuthType(event.AuthType) {
 	case "oauth":
 		if authIndex := strings.TrimSpace(event.AuthIndex); authIndex != "" {
-			key := usageEventIdentityKey{authType: entities.UsageIdentityAuthTypeAuthFile, identity: authIndex}
+			key := usageEventIdentityKey{authType: entities.UsageIdentityAuthTypeCredential, identity: authIndex}
 			if usageType := strings.TrimSpace(resolver.byIdentity[key]); usageType != "" {
 				return usageType
 			}

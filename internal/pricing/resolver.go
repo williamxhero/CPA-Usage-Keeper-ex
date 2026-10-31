@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"strings"
+	"time"
 
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/helper"
@@ -16,8 +17,11 @@ type CostSubject struct {
 	AuthType          string
 	IdentityAuthIndex string
 	ObservedIdentity  bool
+	// Timestamp is used only by the independently configured stored valuation.
+	Timestamp time.Time
 }
 
+// NewCostSubject 规范化事件身份字段；时间由调用方从 CPA 已存 timestamp 填入。
 func NewCostSubject(dimensions UsageDimensions, tokens helper.UsageTokenCostInput) CostSubject {
 	return CostSubject{
 		Dimensions:        canonicalizeUsageDimensions(dimensions),
@@ -58,7 +62,7 @@ type CostResult struct {
 	matchedRuleCount           int
 }
 
-// Resolver 在创建时固定绑定一个 Snapshot，确保单个响应不会混用新旧价格。
+// Resolver pins a single immutable snapshot for each response or stored event batch.
 type Resolver struct {
 	snapshot *Snapshot
 }
@@ -334,7 +338,6 @@ func (r Resolver) CalculateLegacy(subject CostSubject) CostResult {
 			RuleMultiplier: 1, LegacyModelMultiplier: 1, LegacyRuleMultiplier: 1, FinalMultiplier: 1,
 		}, subject, model, false)
 	}
-
 	breakdown := helper.CalculateUsageTokenCostBreakdown(subject.Tokens, model.pricing)
 	ruleMultiplier := 1.0
 	if model.pricing.PriceMultiplier == nil || *model.pricing.PriceMultiplier != 0 {
@@ -362,6 +365,32 @@ func (r Resolver) CalculateLegacy(subject CostSubject) CostResult {
 	}, subject, model, true)
 }
 
+// CalculateFee is used only with the separately published stored-valuation
+// snapshot; old usage responses continue to use Calculate and CalculateLegacy.
+func (r Resolver) CalculateFee(subject CostSubject) FeeResult {
+	model, _, _, found := r.matchModel(subject.Dimensions)
+	if !found {
+		return FeeResult{Available: !helper.UsageTokenInputRequiresPricing(subject.Tokens)}
+	}
+	selected := model.pricing
+	for _, branch := range model.branches {
+		if !branch.matches(subject, r.snapshot.location) {
+			continue
+		}
+		selected.PromptPricePer1M = branch.prices.Input
+		selected.CompletionPricePer1M = branch.prices.Output
+		selected.CacheReadPricePer1M = branch.prices.CacheRead
+		selected.CacheWritePricePer1M = branch.prices.CacheWrite
+		break
+	}
+	total := helper.CalculateUsageTokenCost(subject.Tokens, selected)
+	if model.pricing.PriceMultiplier == nil || *model.pricing.PriceMultiplier != 0 {
+		total *= matchingRuleMultiplier(model.rules, subject.Dimensions)
+	}
+	return FeeResult{TotalCostUSD: total, Available: true}
+}
+
+// matchModel prefers the observed model and only falls back to its alias.
 func (r Resolver) matchModel(dimensions UsageDimensions) (compiledModel, string, string, bool) {
 	if r.snapshot == nil {
 		return compiledModel{}, "", "", false
@@ -375,6 +404,7 @@ func (r Resolver) matchModel(dimensions UsageDimensions) (compiledModel, string,
 	return compiledModel{}, "", "", false
 }
 
+// matchingRuleMultiplier 连乘所有精确匹配的条件；任一零倍率使整条请求免费。
 func matchingRuleMultiplier(rules []compiledRule, dimensions UsageDimensions) float64 {
 	multiplier := 1.0
 	for _, rule := range rules {

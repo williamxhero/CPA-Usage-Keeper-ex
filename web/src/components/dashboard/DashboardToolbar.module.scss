@@ -127,11 +127,6 @@
 .filter > div > button > span:first-of-type { display: inline-flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; overflow: visible; }
 .filter [data-time-range-trigger] > svg:last-child { width: 14px; height: 14px; color: var(--toolbar-muted); }
 .filter [data-dashboard-filter-value], .filter [data-time-range-value] { flex: 0 1 auto; min-width: 0; white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; line-height: 1.4; font-weight: 600; color: var(--text-primary); }
-// Ranking 的原事件与状态保留，去掉旧工具条的嵌套外壳。
-.filter [data-ranking-scope-switch] { min-height: 44px; height: 44px; padding: 0; border: 0; background: transparent; box-shadow: none; }
-.filter [data-ranking-scope-switch] > span { inset: 6px auto 6px 0; width: 50%; border: 1px solid color-mix(in srgb, var(--text-primary) 8%, transparent); background: var(--toolbar-selected); box-shadow: 0 1px 2px rgb(0 0 0 / 8%), 0 3px 8px rgb(0 0 0 / 6%); }
-.filter [data-ranking-scope-switch] button { width: 100%; background: transparent; font-weight: 550; }
-.filter [data-ranking-scope-switch] button[aria-pressed='true'] { color: var(--text-primary); font-weight: 650; }
 
 .host[data-flow='split'] {
   .dock { display: grid; width: 100%; grid-template-columns: 44px minmax(0, 1fr) 44px; grid-template-areas: 'collapse navigation refresh' 'filters filters filters'; gap: 4px var(--toolbar-gap); border-radius: 24px; }

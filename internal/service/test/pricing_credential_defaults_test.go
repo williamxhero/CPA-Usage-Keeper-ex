@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"cpa-usage-keeper/internal/cpa/dto/authfiles"
+	"cpa-usage-keeper/internal/cpa/dto/credentials"
 	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
 	"cpa-usage-keeper/internal/cpa/dto/response"
 	"cpa-usage-keeper/internal/entities"
@@ -1058,8 +1058,8 @@ func TestCredentialDefaultMetadataRefreshAmbiguousStaleFailureAndRecovery(t *tes
 		t.Fatal(err)
 	}
 	fetcher := newMetadataTestFetcher()
-	file := authfiles.AuthFile{AuthIndex: "synthetic-a", Email: "safe@example.invalid", Name: "synthetic.json", Type: "codex", Provider: "codex"}
-	fetcher.setAuthFiles([]authfiles.AuthFile{file})
+	file := credentials.Credential{AuthIndex: "synthetic-a", Email: "safe@example.invalid", Name: "synthetic.json", Type: "codex", Provider: "codex"}
+	fetcher.setCredentials([]credentials.Credential{file})
 	syncer := service.NewSyncServiceWithOptions(f.db, service.SyncServiceOptions{BaseURL: "https://cpa.example.invalid", MetadataFetcher: fetcher, Now: func() time.Time { return f.now }, PricingCatalog: f.catalog})
 	assertFresh := func(expected float64) {
 		t.Helper()
@@ -1093,13 +1093,13 @@ func TestCredentialDefaultMetadataRefreshAmbiguousStaleFailureAndRecovery(t *tes
 	assertFresh(1.96)
 	old := f.catalog.NewResolver()
 	// A successful empty list marks stale, not an erased historical link.
-	fetcher.setAuthFiles(nil)
+	fetcher.setCredentials(nil)
 	if err := syncer.SyncMetadata(ctx); err != nil {
 		t.Fatal(err)
 	}
 	assertFresh(1.96)
-	fetcher.setAuthFiles([]authfiles.AuthFile{file})
-	fetcher.authFilesErr = errors.New("synthetic transient source failure")
+	fetcher.setCredentials([]credentials.Credential{file})
+	fetcher.credentialsErr = errors.New("synthetic transient source failure")
 	if err := syncer.SyncMetadata(ctx); err == nil {
 		t.Fatal("expected warning")
 	}
@@ -1107,13 +1107,13 @@ func TestCredentialDefaultMetadataRefreshAmbiguousStaleFailureAndRecovery(t *tes
 	second := file
 	second.Name = "distinct.json"
 	second.Email = "other@example.invalid"
-	fetcher.setAuthFiles([]authfiles.AuthFile{file, second})
+	fetcher.setCredentials([]credentials.Credential{file, second})
 	if err := syncer.SyncMetadata(ctx); err != nil {
 		t.Fatal(err)
 	}
 	assertFresh(29.4)
 	closeCost(t, old.Calculate(repository.UsageEventCostSubject(f.events[0])).Cost.TotalCostUSD, 1.96)
-	fetcher.setAuthFiles([]authfiles.AuthFile{file})
+	fetcher.setCredentials([]credentials.Credential{file})
 	if err := syncer.SyncMetadata(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1131,7 +1131,7 @@ func TestCredentialDefaultMetadataRefreshAmbiguousStaleFailureAndRecovery(t *tes
 	}); err != nil {
 		t.Fatal(err)
 	}
-	fetcher.setAuthFiles([]authfiles.AuthFile{file, second})
+	fetcher.setCredentials([]credentials.Credential{file, second})
 	if err := syncer.SyncMetadata(cancelCtx); err == nil {
 		t.Fatal("expected reload failure")
 	}
@@ -1150,7 +1150,7 @@ func TestCredentialDefaultMetadataRefreshAmbiguousStaleFailureAndRecovery(t *tes
 	if err != nil || readback.Multiplier == nil || *readback.Multiplier != .2 {
 		t.Fatalf("invalidation lost config %+v %v", readback, err)
 	}
-	fetcher.setAuthFiles([]authfiles.AuthFile{file})
+	fetcher.setCredentials([]credentials.Credential{file})
 	if err := syncer.SyncMetadata(ctx); err != nil {
 		t.Fatal(err)
 	}

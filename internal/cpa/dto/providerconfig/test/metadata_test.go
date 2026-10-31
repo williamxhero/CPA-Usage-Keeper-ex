@@ -8,89 +8,103 @@ import (
 	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
 )
 
-func TestProviderKeyConfigDecodesSupportedFieldAliases(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-	}{
-		// kebab-case 是当前 CPA management response 的主格式。
-		{name: "kebab-case", body: `{"api-key":"provider-key","prefix":"team","name":"Provider","base-url":"https://provider.example/v1","auth-index":"provider-auth","priority":8,"disabled":false,"note":"primary"}`},
-		// snake-case 保留旧响应兼容。
-		{name: "snake-case", body: `{"apiKey":"provider-key","prefix":"team","name":"Provider","base_url":"https://provider.example/v1","auth_index":"provider-auth","priority":8,"disabled":false,"note":"primary"}`},
-		// camel-case 保留 client 既有别名兼容。
-		{name: "camel-case", body: `{"key":"provider-key","prefix":"team","name":"Provider","baseURL":"https://provider.example/v1","authIndex":"provider-auth","priority":8,"disabled":false,"note":"primary"}`},
+func TestProviderGroupProjectionInheritsAndPreservesExplicitOverrides(t *testing.T) {
+	body := `[{"name":"routing group","base-url":"https://example.invalid/v1","prefix":"team","priority":8,"excluded-models":["model-x","*"],"keys":[{"api-key":"first","auth_index":"shared","priority":null,"excluded-models":null},{"api-key":"second","auth_index":"second","priority":0,"prefix":"","excluded-models":[]},{"api-key":"third","auth_index":"third","name":"member name"}]}]`
+	var document providerconfig.Document
+	if err := json.Unmarshal([]byte(body), &document); err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var cfg providerconfig.ProviderKeyConfig
-			if err := json.Unmarshal([]byte(tc.body), &cfg); err != nil {
-				t.Fatalf("unmarshal provider key config: %v", err)
-			}
-			if cfg.APIKey != "provider-key" || cfg.Prefix != "team" || cfg.Name != "Provider" || cfg.BaseURL != "https://provider.example/v1" || cfg.AuthIndex != "provider-auth" {
-				t.Fatalf("provider key fields = %+v", cfg)
-			}
-			if cfg.Priority == nil || *cfg.Priority != 8 || cfg.Disabled == nil || *cfg.Disabled || cfg.Note == nil || *cfg.Note != "primary" {
-				t.Fatalf("provider sync fields = %+v", cfg)
-			}
-		})
+	keys, err := document.ProviderKeys("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("keys = %#v", keys)
+	}
+	if keys[0].Priority == nil || *keys[0].Priority != 8 || keys[0].Prefix != "team" || !*keys[0].Disabled {
+		t.Fatalf("inherited key = %#v", keys[0])
+	}
+	if keys[1].Priority == nil || *keys[1].Priority != 0 || keys[1].Prefix != "" || *keys[1].Disabled || !reflect.DeepEqual(keys[1].ExcludedModels, []string{}) {
+		t.Fatalf("explicit overrides = %#v", keys[1])
+	}
+	if keys[0].Name != "" || keys[2].Name != "member name" || keys[2].BaseURL != "https://example.invalid/v1" {
+		t.Fatalf("name/base URL = %#v", keys)
 	}
 }
 
-func TestProviderKeyConfigInfersDisabledFromExcludedModels(t *testing.T) {
-	cases := []struct {
-		name         string
-		body         string
-		wantDisabled *bool
-	}{
-		{name: "kebab-case wildcard", body: `{"excluded-models":["gemini-1.5-pro","*"]}`, wantDisabled: boolPtr(true)},
-		{name: "snake-case wildcard", body: `{"excluded_models":[" * "]}`, wantDisabled: boolPtr(true)},
-		{name: "camel-case wildcard", body: `{"excludedModels":["*"]}`, wantDisabled: boolPtr(true)},
-		{name: "ordinary exclusions", body: `{"excluded-models":["gpt-*","claude-3"]}`},
-		{name: "explicit disabled wins", body: `{"disabled":false,"excluded-models":["*"]}`, wantDisabled: boolPtr(false)},
+func TestMetaDefaultBaseURLOnlyAppearsInProjection(t *testing.T) {
+	var document providerconfig.Document
+	if err := json.Unmarshal([]byte(`[{"keys":[{"api-key":"meta-key","auth_index":"meta-auth"}]}]`), &document); err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			var cfg providerconfig.ProviderKeyConfig
-			if err := json.Unmarshal([]byte(tc.body), &cfg); err != nil {
-				t.Fatalf("unmarshal provider key config: %v", err)
-			}
-			if !reflect.DeepEqual(cfg.Disabled, tc.wantDisabled) {
-				t.Fatalf("disabled = %v, want %v", cfg.Disabled, tc.wantDisabled)
-			}
-		})
+	keys, err := document.ProviderKeys("https://api.meta.ai/v1")
+	if err != nil || keys[0].BaseURL != "https://api.meta.ai/v1" {
+		t.Fatalf("projection = %#v, err = %v", keys, err)
+	}
+	if _, exists := document.Groups[0].Fields["base-url"]; exists {
+		t.Fatal("default base URL changed raw config")
 	}
 }
 
-func TestOpenAICompatibilityConfigDecodesProviderAndEntryFields(t *testing.T) {
-	// body 同时使用 legacy id/key 与 snake auth_index，验证旧 CPA 响应仍可归一化。
-	body := `{"id":"OpenRouter","prefix":"openrouter","base-url":"https://openrouter.ai/api/v1","priority":4,"disabled":true,"note":"shared","api-key-entries":[{"key":"first-key","auth_index":"first-auth"},{"api-key":"second-key","auth-index":"second-auth"}]}`
-	var cfg providerconfig.OpenAICompatibilityConfig
-	if err := json.Unmarshal([]byte(body), &cfg); err != nil {
-		t.Fatalf("unmarshal openai compatibility config: %v", err)
+func TestOpenAIGroupProjectionKeepsGroupPriorityAndDisabled(t *testing.T) {
+	var document providerconfig.Document
+	if err := json.Unmarshal([]byte(`[{"name":"router","priority":4,"disabled":false,"excluded-models":["*"],"keys":[{"api-key":"first","auth_index":"a","priority":9,"proxy-url":null,"weight":2},{"api-key":"second","auth_index":"b"}]}]`), &document); err != nil {
+		t.Fatal(err)
 	}
-	if cfg.Name != "OpenRouter" || cfg.Prefix != "openrouter" || cfg.BaseURL != "https://openrouter.ai/api/v1" {
-		t.Fatalf("openai provider fields = %+v", cfg)
+	groups, err := document.OpenAIProviders()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.Priority == nil || *cfg.Priority != 4 || cfg.Disabled == nil || !*cfg.Disabled || cfg.Note == nil || *cfg.Note != "shared" {
-		t.Fatalf("openai sync fields = %+v", cfg)
-	}
-	if len(cfg.APIKeyEntries) != 2 || cfg.APIKeyEntries[0].APIKey != "first-key" || cfg.APIKeyEntries[0].AuthIndex != "first-auth" || cfg.APIKeyEntries[1].APIKey != "second-key" || cfg.APIKeyEntries[1].AuthIndex != "second-auth" {
-		t.Fatalf("openai key entries = %+v", cfg.APIKeyEntries)
+	group := groups[0]
+	if *group.Priority != 4 || *group.Disabled || len(group.APIKeyEntries) != 2 || group.APIKeyEntries[1].AuthIndex != "b" {
+		t.Fatalf("group = %#v", group)
 	}
 }
 
-func TestOpenAICompatibilityDoesNotInferDisabledFromExcludedModels(t *testing.T) {
-	var cfg providerconfig.OpenAICompatibilityConfig
-	if err := json.Unmarshal([]byte(`{"name":"OpenRouter","excluded-models":["*"]}`), &cfg); err != nil {
-		t.Fatalf("unmarshal openai compatibility config: %v", err)
-	}
-	if cfg.Disabled != nil {
-		t.Fatalf("openai disabled = %v, want nil", *cfg.Disabled)
+func TestProviderDocumentRejectsMalformedGroupAndMemberStructures(t *testing.T) {
+	for _, body := range []string{`null`, `{}`, `[null]`, `[{"keys":null}]`, `[{"keys":{}}]`, `[{"keys":[null]}]`, `[{"keys":["key"]}]`} {
+		var document providerconfig.Document
+		if err := json.Unmarshal([]byte(body), &document); err == nil {
+			t.Fatalf("decoded malformed structure: %s", body)
+		}
 	}
 }
 
-func boolPtr(value bool) *bool {
-	return &value
+func TestProviderProjectionNormalizesEffectivePrefixAndExclusionsOnly(t *testing.T) {
+	var document providerconfig.Document
+	raw := `[{"prefix":" /team/ ","excluded-models":[" MODEL-X "," * ","model-x", ""],"keys":[{"api-key":"key","auth_index":"a"},{"api-key":"other","auth_index":"b","prefix":"bad/path"}]}]`
+	if err := json.Unmarshal([]byte(raw), &document); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := document.ProviderKeys("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys[0].Prefix != "team" || keys[1].Prefix != "" || !*keys[0].Disabled || !reflect.DeepEqual(keys[0].ExcludedModels, []string{"model-x", "*"}) {
+		t.Fatalf("effective keys = %#v", keys)
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original, after any
+	json.Unmarshal([]byte(raw), &original)
+	json.Unmarshal(encoded, &after)
+	if !reflect.DeepEqual(original, after) {
+		t.Fatalf("projection changed raw config: %s", encoded)
+	}
+}
+
+func TestNativeGroupNameDoesNotParticipateInMemberProjection(t *testing.T) {
+	var document providerconfig.Document
+	if err := json.Unmarshal([]byte(`[{"name":123,"priority":6,"keys":[{"api-key":"key","auth_index":"target"}]}]`), &document); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := document.ProviderKeys("")
+	if err != nil || len(keys) != 1 || keys[0].Name != "" || *keys[0].Priority != 6 {
+		t.Fatalf("keys = %#v, err = %v", keys, err)
+	}
+	if string(document.Groups[0].Fields["name"]) != "123" {
+		t.Fatal("unconsumed group name changed")
+	}
 }

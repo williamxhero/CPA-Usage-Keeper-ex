@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"cpa-usage-keeper/internal/repository"
+	"cpa-usage-keeper/internal/helper"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -31,18 +31,19 @@ type UsagePayloadMetadata struct {
 }
 
 type usagePayload struct {
-	Timestamp string             `json:"timestamp"`
-	LatencyMS int64              `json:"latency_ms"`
-	TTFTMS    int64              `json:"ttft_ms"`
-	Source    string             `json:"source"`
-	AuthIndex string             `json:"auth_index"`
-	Tokens    usagePayloadTokens `json:"tokens"`
-	Provider  string             `json:"provider"`
-	Model     string             `json:"model"`
-	AuthType  string             `json:"auth_type"`
-	APIKey    string             `json:"api_key"`
-	RequestID string             `json:"request_id"`
-	Endpoint  string             `json:"endpoint"`
+	ExecutionID string             `json:"execution_id"`
+	Timestamp   string             `json:"timestamp"`
+	LatencyMS   int64              `json:"latency_ms"`
+	TTFTMS      int64              `json:"ttft_ms"`
+	Source      string             `json:"source"`
+	AuthIndex   string             `json:"auth_index"`
+	Tokens      usagePayloadTokens `json:"tokens"`
+	Provider    string             `json:"provider"`
+	Model       string             `json:"model"`
+	AuthType    string             `json:"auth_type"`
+	APIKey      string             `json:"api_key"`
+	RequestID   string             `json:"request_id"`
+	Endpoint    string             `json:"endpoint"`
 }
 
 type usagePayloadTokens struct {
@@ -176,7 +177,8 @@ func buildUsagePayload(sequence int64, timestamp time.Time, cardinality Cardinal
 			CacheCreationTokens: cacheCreation, TotalTokens: total,
 		},
 		Provider: provider, Model: metadata.Model, AuthType: authType, APIKey: metadata.APIGroupKey,
-		RequestID: fmt.Sprintf("bench-live-%012d", sequence), Endpoint: []string{"responses", "chat/completions", "messages"}[modelIndex%3],
+		ExecutionID: fmt.Sprintf("bench-execution-%012d", sequence),
+		RequestID:   fmt.Sprintf("bench-live-%012d", sequence), Endpoint: []string{"responses", "chat/completions", "messages"}[modelIndex%3],
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -352,7 +354,7 @@ func openProbeDatabase(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve probe database path: %w", err)
 	}
-	dsn := repository.BuildSQLiteFileURI(absolute) + "?mode=ro&_query_only=on&_busy_timeout=5000"
+	dsn := helper.BuildSQLiteFileURI(absolute) + "?mode=ro&_query_only=on&_busy_timeout=5000"
 	database, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open probe database: %w", err)

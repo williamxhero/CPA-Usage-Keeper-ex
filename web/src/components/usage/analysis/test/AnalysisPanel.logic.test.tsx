@@ -325,11 +325,7 @@ describe('AnalysisPanel token chart data', () => {
     expect(markup).toContain('0.03');
     expect(markup).toContain('usage_stats.tpm');
     expect(markup).toContain('8.33');
-    expect(markup).not.toContain('<table');
     expect(markup).not.toContain('gpt-4o');
-    expect(markup).not.toContain('usage_stats.analysis_model_composition_title');
-    expect(markup).not.toContain('usage_stats.analysis_auth_files_composition_title');
-    expect(markup).not.toContain('usage_stats.analysis_ai_provider_composition_title');
   });
 
   it('uses native usage distribution tooltip callbacks with wrapped long titles', () => {
@@ -927,10 +923,10 @@ describe('AnalysisPanel token chart data', () => {
         cache_read_rate: 0,
       })],
       cost_breakdown: {
-        uncached_input_cost_usd: 0,
-        output_cost_usd: 0,
-        cache_read_cost_usd: 0,
-        cache_write_cost_usd: 0,
+        uncached_input_cost_usd: 0, cache_read_cost_usd: 0, cache_write_cost_usd: 0,
+        output_cost_usd: 0, total_cost_usd: 0, cost_available: false,
+      },
+      cost_summary: {
         total_cost_usd: 0,
         cost_available: false,
       },
@@ -978,10 +974,10 @@ describe('AnalysisPanel token chart data', () => {
         cost_available: false,
       })],
       cost_breakdown: {
-        uncached_input_cost_usd: 9,
-        output_cost_usd: 0,
-        cache_read_cost_usd: 0,
-        cache_write_cost_usd: 0,
+        uncached_input_cost_usd: 0, cache_read_cost_usd: 0, cache_write_cost_usd: 0,
+        output_cost_usd: 9, total_cost_usd: 9, cost_available: false,
+      },
+      cost_summary: {
         total_cost_usd: 9,
         cost_available: false,
       },
@@ -993,7 +989,7 @@ describe('AnalysisPanel token chart data', () => {
     const costDataset = chartCapture.barData?.datasets.find((dataset) => dataset.label === 'cost_estimates.configured');
     expect(costDataset?.data).toEqual([9]);
     expect(markup).toContain('usage_stats.cost_need_price');
-    expect([...container.querySelectorAll('[class*="analysisSummary"] dd')].map((value) => value.textContent)).toEqual(['1.10K', 'cost_estimates.configured$9.00cost_estimates.not_providedcost_estimates.reference—cost_estimates.not_provided', '$8,181.82']);
+    expect([...container.querySelectorAll('[class*="analysisSummary"] dd')].map((value) => value.textContent)).toEqual(['1.10K', 'cost_estimates.configured$9.00cost_estimates.not_providedcost_estimates.reference—cost_estimates.not_provided', '$8,181.82', '$9.00']);
   });
 
   it('shows compact heatmap cells with id keys and display labels', () => {

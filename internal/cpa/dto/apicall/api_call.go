@@ -1,6 +1,9 @@
 package apicall
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 type Request struct {
 	AuthIndex string            `json:"authIndex"`
@@ -10,6 +13,7 @@ type Request struct {
 	Data      any               `json:"data,omitempty"`
 }
 
+// MarshalJSON 将调用数据封装为 CPA 要求的字符串；已是字符串时不再编码，避免双重转义。
 func (r Request) MarshalJSON() ([]byte, error) {
 	type alias Request
 	encoded := alias(r)
@@ -25,37 +29,29 @@ func (r Request) MarshalJSON() ([]byte, error) {
 	return json.Marshal(encoded)
 }
 
+// Response 同时保留 api-call 的 JSON 字符串 body 和解码后的文本。
+// Body 供仍按原始 JSON 读取的调用方使用，BodyText 供额度解析使用，不将响应正文重编码为对象。
 type Response struct {
-	StatusCode int                 `json:"statusCode"`
+	StatusCode int                 `json:"status_code"`
 	Header     map[string][]string `json:"header"`
-	BodyText   string              `json:"bodyText"`
+	BodyText   string              `json:"-"`
 	Body       json.RawMessage     `json:"body"`
 }
 
 func (r *Response) UnmarshalJSON(data []byte) error {
-	type alias struct {
-		StatusCode      int                 `json:"statusCode"`
-		Header          map[string][]string `json:"header"`
-		BodyText        string              `json:"bodyText"`
-		Body            json.RawMessage     `json:"body"`
-		StatusCodeSnake int                 `json:"status_code"`
-		BodyTextSnake   string              `json:"body_text"`
+	var decoded struct {
+		StatusCode int                 `json:"status_code"`
+		Header     map[string][]string `json:"header"`
+		Body       json.RawMessage     `json:"body"`
 	}
-	var decoded alias
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	if decoded.StatusCode == 0 {
-		decoded.StatusCode = decoded.StatusCodeSnake
+	// 上游正文按字符串合同读取，保留空正文和非 JSON 文本；对象正文视为合同错误。
+	var bodyText string
+	if err := json.Unmarshal(decoded.Body, &bodyText); err != nil {
+		return fmt.Errorf("decode api-call body: %w", err)
 	}
-	if decoded.BodyText == "" {
-		decoded.BodyText = decoded.BodyTextSnake
-	}
-	*r = Response{
-		StatusCode: decoded.StatusCode,
-		Header:     decoded.Header,
-		BodyText:   decoded.BodyText,
-		Body:       decoded.Body,
-	}
+	*r = Response{StatusCode: decoded.StatusCode, Header: decoded.Header, BodyText: bodyText, Body: decoded.Body}
 	return nil
 }

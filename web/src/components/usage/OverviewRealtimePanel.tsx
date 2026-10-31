@@ -1,3 +1,6 @@
+import { disambiguateTimeLabels, getIntlTimeZone } from '@/utils/usage/timeLabels';
+import { ChartLifecycleProvider, type ChartRefreshSignal } from './charts/chartLifecycle';
+import { RealtimeModelSpeedCard } from './model-speed/RealtimeModelSpeedCard';
 import { RealtimeCacheChart, RealtimeDiagnostics, RealtimeWindowCards } from './RealtimeInsights';
 import { RealtimeTokenShareRibbons } from './RealtimeTokenShareRibbons';
 import { dualCostLines } from './DualCosts';
@@ -5,7 +8,7 @@ import { useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import '@/lib/chartjs';
 import type { ChartData, ChartOptions, Plugin } from 'chart.js';
-import { Line } from 'react-chartjs-2';
+import { Line } from './charts/UsageChart';
 import { LatencyScatterChart } from './LatencyScatterChart';
 import type {
   DualCosts,
@@ -22,7 +25,7 @@ import {
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import styles from '@/pages/UsagePage.module.scss';
 
-type RealtimeDimensionKey = 'models' | 'api_keys' | 'auth_files' | 'ai_providers';
+type RealtimeDimensionKey = 'models' | 'api_keys' | 'credentials' | 'ai_providers';
 
 interface RealtimeDimension {
   key: RealtimeDimensionKey;
@@ -63,10 +66,13 @@ interface OverviewRealtimePanelProps {
   isMobile: boolean;
   timezone?: string;
   visibleDimensions?: readonly RealtimeDimensionKey[];
+  modelSpeedPreferenceScope?: string | null;
+  modelSpeedQueryKey?: string;
+  chartRefreshSignal?: ChartRefreshSignal;
 }
 
 const REALTIME_WINDOWS: OverviewRealtimeWindow[] = ['15m', '30m', '60m'];
-const DEFAULT_VISIBLE_DIMENSIONS: readonly RealtimeDimensionKey[] = ['models', 'api_keys', 'auth_files', 'ai_providers'];
+const DEFAULT_VISIBLE_DIMENSIONS: readonly RealtimeDimensionKey[] = ['models', 'api_keys', 'credentials', 'ai_providers'];
 const THROUGHPUT_Y_TICK_COUNT = 6;
 const THROUGHPUT_Y_INTERVAL_COUNT = THROUGHPUT_Y_TICK_COUNT - 1;
 const THROUGHPUT_LEGEND_BOTTOM_GAP = 10;
@@ -107,18 +113,12 @@ const emptyRealtime = (window: OverviewRealtimeWindow): OverviewRealtimeBlock =>
   current_usage: {
     models: [],
     api_keys: [],
-    auth_files: [],
+    credentials: [],
     ai_providers: [],
   },
   request_level: [],
   cache_level: [],
 });
-
-const getIntlTimeZone = (timezone: string | undefined) => {
-  const trimmed = timezone?.trim();
-  if (!trimmed || trimmed === 'Local') return undefined;
-  return trimmed;
-};
 
 const formatBucketLabelFromLiteral = (bucket: string): string | null => {
   const match = bucket.match(/^\d{4}-\d{2}-\d{2}[T\s](\d{2}):(\d{2})(?::(\d{2}))?/);
@@ -538,7 +538,7 @@ function RealtimeChartFrame({ loading, emptyLabel, children }: { loading: boolea
   );
 }
 
-export function OverviewRealtimePanel({ realtime, loading, error, window, onWindowChange, isDark, isMobile, timezone, visibleDimensions = DEFAULT_VISIBLE_DIMENSIONS }: OverviewRealtimePanelProps) {
+export function OverviewRealtimePanel({ realtime, loading, error, window, onWindowChange, isDark, isMobile, timezone, visibleDimensions = DEFAULT_VISIBLE_DIMENSIONS, modelSpeedPreferenceScope = 'admin', modelSpeedQueryKey = window, chartRefreshSignal }: OverviewRealtimePanelProps) {
   const { t } = useTranslation();
   const data = realtime ?? emptyRealtime(window);
   const initialLoading = loading && !realtime;
@@ -547,13 +547,13 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
   const showErrorOnly = Boolean(error && !hasRealtimeData);
   const [activeDimension, setActiveDimension] = useState<RealtimeDimensionKey>('models');
   const throughputPoints = useMemo(() => buildRealtimeThroughputPoints(data), [data]);
-  const labels = useMemo(() => throughputPoints.map((point) => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.timezone, throughputPoints, timezone]);
-  const cacheLabels = useMemo(() => data.cache_level.map((point) => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.cache_level, data.timezone, timezone]);
+  const labels = useMemo(() => disambiguateTimeLabels(throughputPoints.map((point) => point.bucket), data.timezone ?? timezone, (bucket) => formatBucketLabel(bucket, data.timezone ?? timezone), 'seconds'), [data.timezone, throughputPoints, timezone]);
+  const cacheLabels = useMemo(() => disambiguateTimeLabels(data.cache_level.map((point) => point.bucket), data.timezone ?? timezone, (bucket) => formatBucketLabel(bucket, data.timezone ?? timezone), 'seconds'), [data.cache_level, data.timezone, timezone]);
 
   const tokenValues = useMemo(() => throughputPoints.map((point) => point.tokensPerMinute), [throughputPoints]);
   const requestValues = useMemo(() => throughputPoints.map((point) => point.requestsPerMinute), [throughputPoints]);
   const cacheValues = useMemo(() => data.cache_level.map((point) => point.cache_read_rate == null ? null : safeNumber(point.cache_read_rate)), [data.cache_level]);
-  const outcomeLabels = useMemo(() => (data.insights?.outcomes ?? []).map(point => formatBucketLabel(point.bucket, data.timezone ?? timezone)), [data.insights?.outcomes, data.timezone, timezone]);
+  const outcomeLabels = useMemo(() => disambiguateTimeLabels((data.insights?.outcomes ?? []).map(point => point.bucket), data.timezone ?? timezone, (bucket) => formatBucketLabel(bucket, data.timezone ?? timezone), 'seconds'), [data.insights?.outcomes, data.timezone, timezone]);
   const latencyScatter = data.latency_scatter ?? { points: [], total_points: 0, p95_ttft_ms: 0, p95_latency_ms: 0, max_ttft_ms: 0, max_latency_ms: 0 };
   const throughputEmptyLabel = throughputPoints.length === 0 ? t('usage_stats.overview_realtime_throughput_empty') : undefined;
   const latencyEmptyLabel = latencyScatter.total_points === 0 ? t('usage_stats.no_data') : undefined;
@@ -600,15 +600,16 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
     const next: RealtimeDimension[] = [
       { key: 'models', labelKey: 'usage_stats.overview_realtime_dimension_models', items: data.current_usage.models },
       { key: 'api_keys', labelKey: 'usage_stats.overview_realtime_dimension_api_keys', items: data.current_usage.api_keys },
-      { key: 'auth_files', labelKey: 'usage_stats.overview_realtime_dimension_auth_files', items: data.current_usage.auth_files },
+      { key: 'credentials', labelKey: 'usage_stats.overview_realtime_dimension_credentials', items: data.current_usage.credentials },
       { key: 'ai_providers', labelKey: 'usage_stats.overview_realtime_dimension_ai_providers', items: data.current_usage.ai_providers },
     ];
     const visible = new Set(visibleDimensions);
     return next.filter((dimension) => visible.has(dimension.key));
-  }, [data.current_usage.ai_providers, data.current_usage.api_keys, data.current_usage.auth_files, data.current_usage.models, visibleDimensions]);
+  }, [data.current_usage.ai_providers, data.current_usage.api_keys, data.current_usage.credentials, data.current_usage.models, visibleDimensions]);
   const visibleDimension = dimensions.find((dimension) => dimension.key === activeDimension) ?? dimensions[0];
 
   return (
+    <ChartLifecycleProvider queryKey={modelSpeedQueryKey} source={realtime} refreshSignal={chartRefreshSignal}>
     <div className={styles.overviewRealtimeSection}>
       <div className={styles.overviewRealtimeToolbar}>
         <div className={styles.overviewRealtimeHeading}>
@@ -691,19 +692,22 @@ export function OverviewRealtimePanel({ realtime, loading, error, window, onWind
             </RealtimeCard>
           </div>
 
-          <RealtimeCard
-            title={t('usage_stats.overview_realtime_cache_level')}
-            metrics={metricChips(cacheValues, (value) => `${formatFixedTwoDecimals(value)}%`, averageLabel, latestLabel, trendLabel)}
-            metricsTooltip={rollingMetricHint}
-            full
-          >
-            <RealtimeChartFrame loading={loading} emptyLabel={cacheEmptyLabel}>
-              <RealtimeCacheChart points={data.cache_level} labels={cacheLabels} isDark={isDark} isMobile={isMobile} />
-            </RealtimeChartFrame>
-          </RealtimeCard>
+          <div className={styles.overviewRealtimeResponseUsageRow}>
+            <RealtimeModelSpeedCard speed={realtime?.window === window ? data.model_speed : undefined} loading={(loading && !realtime) || Boolean(realtime && realtime.window !== window)} isDark={isDark} isMobile={isMobile} timezone={data.timezone ?? timezone} preferenceScope={modelSpeedPreferenceScope} queryKey={modelSpeedQueryKey} refreshSignal={chartRefreshSignal && chartRefreshSignal.source === realtime && data.model_speed ? { source: data.model_speed, revision: chartRefreshSignal.revision } : undefined} />
+            <RealtimeCard
+              title={t('usage_stats.overview_realtime_cache_level')}
+              metrics={metricChips(cacheValues, (value) => `${formatFixedTwoDecimals(value)}%`, averageLabel, latestLabel, trendLabel)}
+              metricsTooltip={rollingMetricHint}
+            >
+              <RealtimeChartFrame loading={loading} emptyLabel={cacheEmptyLabel}>
+                <RealtimeCacheChart points={data.cache_level} labels={cacheLabels} isDark={isDark} isMobile={isMobile} />
+              </RealtimeChartFrame>
+            </RealtimeCard>
+          </div>
           </div>
         </>
       )}
     </div>
+    </ChartLifecycleProvider>
   );
 }

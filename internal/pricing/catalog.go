@@ -9,6 +9,7 @@ var sharedEmptySnapshot = &Snapshot{
 	modelsByName:    map[string]compiledModel{},
 	modelConfigs:    []ModelConfig{},
 	matrixOverrides: map[credentialModelKey]CredentialMatrixConfig{},
+	pricingConfigs:  []ModelPricingConfig{},
 }
 
 // EmptySnapshot 返回可显式注入的只读空价格快照。

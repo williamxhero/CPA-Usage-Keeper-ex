@@ -17,9 +17,9 @@ import (
 
 const codexQuotaHistoryRange = 30 * 24 * time.Hour
 
-// CodexQuotaHistoryRequest 选择一个 Codex Auth File 及可选的上游主额度角色。
+// CodexQuotaHistoryRequest 选择一个 Codex Credential 及可选的上游主额度角色。
 type CodexQuotaHistoryRequest struct {
-	// AuthIndex 来自详情抽屉当前 Auth File，不接受 AI Provider 身份。
+	// AuthIndex 来自详情抽屉当前 Credential，不接受 AI Provider 身份。
 	AuthIndex string `json:"-"`
 	// WindowRole 可选地选择 primary 或 secondary；nil 表示自动选择当前角色。
 	WindowRole *string `json:"-"`
@@ -81,7 +81,7 @@ type CodexQuotaHistoryCycle struct {
 	LastRemainingPercent  *int `json:"last_remaining_percent"`
 	// ObservationCount 是周期内所有百分比段的累计采样次数。
 	ObservationCount int64 `json:"observation_count"`
-	// Usage 包含稳定段在内的整个周期 UsageEvent 动态回溯总量。
+	// Usage 包含稳定段在内的整个周期 UsageEvent 已存费用与 Token 总量。
 	Usage CodexQuotaHistoryUsage `json:"usage"`
 	// Transitions 只列真实相邻剩余百分比变化，不补造跨档中间点。
 	Transitions []CodexQuotaHistoryTransition `json:"transitions"`
@@ -101,18 +101,18 @@ type CodexQuotaHistoryTransition struct {
 	IntervalStartedAt time.Time `json:"interval_started_at"`
 	// IntervalEndedAt 是后一百分比首次出现时间，属于统计区间且只归前一次下降。
 	IntervalEndedAt time.Time `json:"interval_ended_at"`
-	// Usage 是该观察间隔内的请求、Token 与动态 Cost。
+	// Usage 是该观察间隔内的请求、Token 与已存费用。
 	Usage CodexQuotaHistoryUsage `json:"usage"`
 	// TokensPerPoint 是区间总 Token 除以真实下降百分点。
 	TokensPerPoint float64 `json:"tokens_per_point"`
-	// CostPerPoint 是区间动态 Cost 除以真实下降百分点。
+	// CostPerPoint 是区间已存费用总量除以真实下降百分点。
 	CostPerPoint float64 `json:"cost_per_point"`
 	// CostPerPointAvailable 为 false 时前端不得把 CostPerPoint 显示成零成本。
 	CostPerPointAvailable bool              `json:"cost_per_point_available"`
 	DualCostsPerPoint     pricing.DualCosts `json:"dual_costs_per_point"`
 }
 
-// CodexQuotaHistoryUsage 是前端周期摘要和变化区间列表共享的动态聚合事实。
+// CodexQuotaHistoryUsage 是前端周期摘要和变化区间列表共享的已存费用聚合事实。
 type CodexQuotaHistoryUsage struct {
 	PricingSnapshotID string `json:"pricing_snapshot_id,omitempty"`
 	// Requests 是匹配请求总数。
@@ -133,14 +133,14 @@ type CodexQuotaHistoryUsage struct {
 	CacheCreationTokens int64 `json:"cache_creation_tokens"`
 	// TotalTokens 是页面效率对比采用的总 Token。
 	TotalTokens int64 `json:"total_tokens"`
-	// TotalCostUSD 是按响应生成时当前定价动态回算的美元成本。
+	// TotalCostUSD 是事件已存美元费用之和。
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	// CostAvailable 只有全部有 Token 的定价分组均可计价时才为 true。
 	CostAvailable bool              `json:"cost_available"`
 	DualCosts     pricing.DualCosts `json:"dual_costs"`
 }
 
-// GetCodexQuotaHistory 校验 Auth File 身份后，用单个 pricing snapshot 动态生成额度效率响应。
+// GetCodexQuotaHistory 校验 Credential 身份后，按原周期边界归属已存事件费用。
 func (s *Service) GetCodexQuotaHistory(ctx context.Context, request CodexQuotaHistoryRequest) (CodexQuotaHistoryResponse, error) {
 	response := CodexQuotaHistoryResponse{}
 	if s == nil || s.db == nil {
@@ -160,8 +160,8 @@ func (s *Service) GetCodexQuotaHistory(ctx context.Context, request CodexQuotaHi
 		}
 		request.WindowRole = &role
 	}
-	// 先确认当前仍是活跃 Auth File，删除身份和 AI Provider 都不能借 auth_index 查询历史。
-	identity, err := repository.GetActiveAuthFileUsageIdentityByAuthIndex(ctx, s.db, request.AuthIndex)
+	// 先确认当前仍是活跃 Credential，删除身份和 AI Provider 都不能借 auth_index 查询历史。
+	identity, err := repository.GetActiveCredentialUsageIdentityByAuthIndex(ctx, s.db, request.AuthIndex)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return response, fmt.Errorf("%w: %s", ErrNotFound, request.AuthIndex)
@@ -173,18 +173,25 @@ func (s *Service) GetCodexQuotaHistory(ctx context.Context, request CodexQuotaHi
 		return response, fmt.Errorf("%w: %s", ErrUnsupportedType, normalizeIdentityType(identity.Type))
 	}
 
-	// now 在方法入口固定一次；单个 resolver 同样固定一个 snapshot，响应不会混用新旧价格。
+	// now 在方法入口固定一次，当前周期截点和响应时间保持一致。
 	now := request.Now
 	if now.IsZero() {
 		now = time.Now()
 	}
-	history, err := repository.BuildCodexQuotaEfficiencyHistory(ctx, s.db, repositorydto.CodexQuotaEfficiencyQuery{
-		Provider:   provider,
-		AuthIndex:  request.AuthIndex,
-		Now:        now,
-		RangeStart: now.Add(-codexQuotaHistoryRange),
-		WindowRole: request.WindowRole,
-	}, s.pricing.NewResolver())
+	query := repositorydto.CodexQuotaEfficiencyQuery{Provider: provider, AuthIndex: request.AuthIndex, Now: now, RangeStart: now.Add(-codexQuotaHistoryRange), WindowRole: request.WindowRole}
+	var history repositorydto.CodexQuotaEfficiencyHistory
+	if s.storedWindowStats != nil {
+		stored, storedErr := repository.BuildStoredCodexQuotaEfficiencyHistory(ctx, s.db, query)
+		if storedErr != nil {
+			return response, fmt.Errorf("get stored codex quota history: %w", storedErr)
+		}
+		return codexQuotaHistoryResponseFromStoredRepository(stored), nil
+	} else {
+		if s.pricing == nil {
+			return response, fmt.Errorf("current quota history pricing catalog is required")
+		}
+		history, err = repository.BuildCodexQuotaEfficiencyHistory(ctx, s.db, query, s.pricing.NewResolver())
+	}
 	if err != nil {
 		return response, fmt.Errorf("get codex quota history: %w", err)
 	}
@@ -288,5 +295,80 @@ func codexQuotaHistoryUsageFromRepository(usage repositorydto.CodexQuotaEfficien
 		TotalCostUSD:        usage.TotalCostUSD,
 		CostAvailable:       usage.CostAvailable,
 		DualCosts:           usage.DualCosts.Normalized(),
+	}
+}
+
+// Stored adapters never construct a current catalog or normalize missing quotes to known-free.
+func codexQuotaHistoryResponseFromStoredRepository(history repositorydto.StoredCodexQuotaEfficiencyHistory) CodexQuotaHistoryResponse {
+	response := CodexQuotaHistoryResponse{
+		GeneratedAt: history.GeneratedAt,
+
+		RangeStart: history.RangeStart,
+		Windows:    make([]CodexQuotaHistoryWindow, 0, len(history.Windows)),
+		Cycles:     make([]CodexQuotaHistoryCycle, 0, len(history.Cycles)),
+	}
+	for _, window := range history.Windows {
+		response.Windows = append(response.Windows, codexQuotaHistoryWindowFromRepository(window))
+	}
+	if history.SelectedWindow != nil {
+		window := codexQuotaHistoryWindowFromRepository(*history.SelectedWindow)
+		response.SelectedWindow = &window
+	}
+	for _, cycle := range history.Cycles {
+		response.Cycles = append(response.Cycles, codexQuotaHistoryCycleFromStoredRepository(cycle))
+	}
+	return response
+}
+
+func codexQuotaHistoryCycleFromStoredRepository(cycle repositorydto.StoredCodexQuotaEfficiencyCycle) CodexQuotaHistoryCycle {
+	response := CodexQuotaHistoryCycle{
+		ID:                    cycle.ID,
+		Status:                cycle.Status,
+		WindowSeconds:         cycle.WindowSeconds,
+		WindowStartedAt:       cycle.WindowStartedAt,
+		ResetAt:               cycle.ResetAt,
+		EffectiveStartedAt:    cycle.EffectiveStartedAt,
+		EffectiveEndedAt:      cycle.EffectiveEndedAt,
+		FirstObservedAt:       cycle.FirstObservedAt,
+		LastObservedAt:        cycle.LastObservedAt,
+		FirstRemainingPercent: cloneCodexQuotaHistoryInt(cycle.FirstRemainingPercent),
+		LastRemainingPercent:  cloneCodexQuotaHistoryInt(cycle.LastRemainingPercent),
+		ObservationCount:      cycle.ObservationCount,
+		Usage:                 codexQuotaHistoryUsageFromStoredRepository(cycle.Usage),
+		Transitions:           make([]CodexQuotaHistoryTransition, 0, len(cycle.Transitions)),
+	}
+	for _, transition := range cycle.Transitions {
+		response.Transitions = append(response.Transitions, CodexQuotaHistoryTransition{
+			FromRemainingPercent:  transition.FromRemainingPercent,
+			ToRemainingPercent:    transition.ToRemainingPercent,
+			PercentagePoints:      transition.PercentagePoints,
+			IsDirect:              transition.IsDirect,
+			IntervalStartedAt:     transition.IntervalStartedAt,
+			IntervalEndedAt:       transition.IntervalEndedAt,
+			Usage:                 codexQuotaHistoryUsageFromStoredRepository(transition.Usage),
+			TokensPerPoint:        transition.TokensPerPoint,
+			CostPerPoint:          transition.CostPerPoint,
+			CostPerPointAvailable: transition.CostPerPointAvailable,
+			DualCostsPerPoint:     pricing.DualCosts{Configured: pricing.PriceEstimate{Status: "unavailable", Source: "stored", UnavailableReason: "stored_cost_source"}, Reference: pricing.PriceEstimate{Status: "unavailable", Source: "stored", UnavailableReason: "stored_cost_source"}},
+		})
+	}
+	return response
+}
+
+func codexQuotaHistoryUsageFromStoredRepository(usage repositorydto.StoredCodexQuotaEfficiencyUsage) CodexQuotaHistoryUsage {
+	return CodexQuotaHistoryUsage{
+		Requests: usage.Requests,
+
+		SuccessfulRequests:  usage.SuccessfulRequests,
+		FailedRequests:      usage.FailedRequests,
+		InputTokens:         usage.InputTokens,
+		OutputTokens:        usage.OutputTokens,
+		ReasoningTokens:     usage.ReasoningTokens,
+		CacheReadTokens:     usage.CacheReadTokens,
+		CacheCreationTokens: usage.CacheCreationTokens,
+		TotalTokens:         usage.TotalTokens,
+		TotalCostUSD:        usage.TotalCostUSD,
+		CostAvailable:       usage.CostAvailable,
+		DualCosts:           pricing.DualCosts{Configured: pricing.PriceEstimate{Status: "unavailable", Source: "stored", UnavailableReason: "stored_cost_source"}, Reference: pricing.PriceEstimate{Status: "unavailable", Source: "stored", UnavailableReason: "stored_cost_source"}},
 	}
 }

@@ -85,6 +85,7 @@ func registerPricingRoutes(router gin.IRoutes, pricingProvider service.PricingPr
 
 	router.PUT("/pricing", pricingFeatureRemoved)
 	router.PUT("/pricing/batch", pricingFeatureRemoved)
+	router.PUT("/pricing/models", pricingFeatureRemoved)
 	router.PUT("/pricing/:model", pricingFeatureRemoved)
 	router.DELETE("/pricing", pricingFeatureRemoved)
 }

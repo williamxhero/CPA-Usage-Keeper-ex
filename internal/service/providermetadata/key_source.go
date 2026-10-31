@@ -3,7 +3,6 @@ package providermetadata
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"cpa-usage-keeper/internal/cpa/dto/providerconfig"
@@ -14,9 +13,9 @@ import (
 type providerKeyFetch func(context.Context, Fetcher) (*response.ProviderKeyConfigResult, error)
 
 // newProviderKeySource 组装七类标准 API Key source 的共同状态转换。
-func newProviderKeySource(id string, providerType string, defaultDisplayName string, warningName string, optionalNotFound bool, endpointFetch providerKeyFetch) source {
+func newProviderKeySource(id string, providerType string, defaultDisplayName string, warningName string, endpointFetch providerKeyFetch) source {
 	// item 先保存不随请求变化的来源合同。
-	item := source{id: id, providerType: providerType, defaultDisplayName: defaultDisplayName, warningName: warningName, optionalNotFound: optionalNotFound}
+	item := source{id: id, providerType: providerType, defaultDisplayName: defaultDisplayName, warningName: warningName}
 	// fetch 只调用当前 endpoint，再进入共享标准 key 归一化。
 	item.fetch = func(ctx context.Context, fetcher Fetcher) sourceResult {
 		// endpointFetch 由各 source 文件显式绑定，避免运行时 switch 或动态注册。
@@ -30,12 +29,8 @@ func newProviderKeySource(id string, providerType string, defaultDisplayName str
 func fetchProviderKeySource(ctx context.Context, fetcher Fetcher, item source, endpointFetch providerKeyFetch) sourceResult {
 	// 调用当前 source 文件绑定的 CPA client 方法。
 	result, err := endpointFetch(ctx, fetcher)
-	// endpoint error 必须先判断两个新来源的 typed 404。
+	// 接口失败保留现有身份，只有成功来源参与替换。
 	if err != nil {
-		// optional 只依赖非 nil result 的真实状态码，禁止解析错误字符串。
-		if item.optionalNotFound && result != nil && result.StatusCode == http.StatusNotFound {
-			return sourceResult{}
-		}
 		// 其它错误保留来源名称并交给 registry 稳定归并。
 		return sourceResult{warning: fmt.Errorf("fetch %s: %w", item.warningName, err)}
 	}
@@ -47,9 +42,13 @@ func fetchProviderKeySource(ctx context.Context, fetcher Fetcher, item source, e
 	credentials := make([]Credential, 0, len(result.Payload))
 	// 保持 CPA payload entry 顺序，不按展示字段重新排序。
 	for _, config := range result.Payload {
+		// 非空 Key 缺运行时标识时丢弃整个来源，避免部分更新后误删旧身份。
+		if strings.TrimSpace(config.APIKey) != "" && strings.TrimSpace(config.AuthIndex) == "" {
+			return sourceResult{warning: fmt.Errorf("%s contains an API key without auth_index", item.warningName)}
+		}
 		// credential 只从当前 source 常量和当前 entry 的单向字段映射生成。
 		credential, ok := providerKeyCredential(item, config)
-		// 缺 API Key 或 auth-index 的 entry 被过滤，但来源仍保持 fetched。
+		// 空 Key 或其他必填字段不完整的条目仍过滤；非空 Key 的标识已在上面校验。
 		if !ok {
 			continue
 		}
@@ -62,7 +61,7 @@ func fetchProviderKeySource(ctx context.Context, fetcher Fetcher, item source, e
 
 // providerKeyCredential 执行标准 API Key entry 的字段单向映射和必填校验。
 func providerKeyCredential(item source, config providerconfig.ProviderKeyConfig) (Credential, bool) {
-	// lookupKey 只来自 CPA api-key 兼容字段。
+	// lookupKey 只来自 CPA api-key 字段。
 	lookupKey := strings.TrimSpace(config.APIKey)
 	// prefix 只来自 CPA 独立 prefix 字段。
 	prefix := strings.TrimSpace(config.Prefix)
@@ -70,11 +69,11 @@ func providerKeyCredential(item source, config providerconfig.ProviderKeyConfig)
 	providerType := strings.TrimSpace(item.providerType)
 	// displayName 优先使用 CPA name，缺失时使用 source 默认值。
 	displayName := firstNonEmpty(config.Name, item.defaultDisplayName)
-	// authIndex 只来自 CPA auth-index 兼容字段。
+	// authIndex 只来自 CPA auth_index 字段。
 	authIndex := strings.TrimSpace(config.AuthIndex)
-	// baseURL 只来自 CPA 独立 base URL 兼容字段。
+	// baseURL 只来自 CPA 独立 base-url 字段。
 	baseURL := strings.TrimSpace(config.BaseURL)
-	// API Key、provider type、display name 和 auth-index 缺一不可。
+	// API Key、provider type、display name 和 auth_index 缺一不可。
 	if lookupKey == "" || providerType == "" || displayName == "" || authIndex == "" {
 		return Credential{}, false
 	}

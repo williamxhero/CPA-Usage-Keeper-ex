@@ -29,7 +29,7 @@ func TestProcessRedisUsageInboxBatchesProcessedMarks(t *testing.T) {
 	var queries strings.Builder
 	loggedDB := db.Session(&gorm.Session{Logger: gormlogger.New(log.New(&queries, "", 0), gormlogger.Config{LogLevel: gormlogger.Info})})
 	notifier := &recordingUsageAggregationNotifier{}
-	syncService := service.NewSyncServiceWithOptions(loggedDB, service.SyncServiceOptions{
+	syncService := service.NewSyncServiceWithOptions(loggedDB, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		Now:                      func() time.Time { return now },
 		UsageAggregationNotifier: notifier,
@@ -87,7 +87,7 @@ func TestProcessRedisUsageInboxRollsBackAllChunksWhenLaterProcessedMarkFails(t *
 	}
 
 	notifier := &recordingUsageAggregationNotifier{}
-	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{
+	syncService := service.NewSyncServiceWithOptions(db, service.SyncServiceOptions{PricingCatalog: emptyPricingCatalogForTest(),
 		BaseURL:                  "https://cpa.example.com",
 		Now:                      func() time.Time { return now },
 		UsageAggregationNotifier: notifier,
@@ -129,7 +129,7 @@ func redisInboxBatchInputs(prefix string, rowCount int, poppedAt time.Time) []re
 		inputs = append(inputs, repositorydto.RedisInboxInsert{
 			Source: "redis_subscribe:usage",
 			RawMessage: fmt.Sprintf(
-				`{"timestamp":"2026-07-23T09:59:00Z","provider":"OpenAI","auth_type":"api_key","auth_index":"batch-auth","model":"gpt-5.6","request_id":"%s-%d","executor_type":"CodexExecutor","tokens":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
+				`{"timestamp":"2026-07-23T09:59:00Z","provider":"OpenAI","auth_type":"api_key","auth_index":"batch-auth","model":"gpt-5.6","execution_id":"fixture-execution","request_id":"%s-%d","executor_type":"CodexExecutor","tokens":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
 				prefix,
 				i,
 			),

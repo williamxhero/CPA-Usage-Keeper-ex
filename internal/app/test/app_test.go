@@ -20,7 +20,6 @@ import (
 	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/quota"
 	"cpa-usage-keeper/internal/repository"
-	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -46,7 +45,7 @@ func TestAppCloseStopsRealQuotaRefreshTasksBeforeDatabaseClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenDatabase returned error: %v", err)
 	}
-	if err := db.Create(&entities.UsageIdentity{Identity: "auth-1", Name: "auth-1", Provider: "claude", Type: "auth-file", AuthType: entities.UsageIdentityAuthTypeAuthFile}).Error; err != nil {
+	if err := db.Create(&entities.UsageIdentity{Identity: "auth-1", Name: "auth-1", Provider: "claude", Type: "unknown-type", AuthType: entities.UsageIdentityAuthTypeCredential}).Error; err != nil {
 		t.Fatalf("seed usage identity returned error: %v", err)
 	}
 	block := make(chan struct{})
@@ -82,10 +81,7 @@ func TestAppCloseStopsRealQuotaRefreshTasksBeforeDatabaseClose(t *testing.T) {
 }
 
 func TestNewWithConfigBuildsAndClosesApplication(t *testing.T) {
-	app, err := NewWithConfig(testAppConfig(t))
-	if err != nil {
-		t.Fatalf("NewWithConfig returned error: %v", err)
-	}
+	app := newInitializedApp(t, testAppConfig(t))
 	defer app.Close()
 	if runner, ok := app.Poller.(*poller.RedisPoller); !ok || runner == nil {
 		t.Fatalf("expected Poller to be an initialized RedisPoller, got %T", app.Poller)
@@ -133,10 +129,7 @@ func TestNewWithConfigBuildsAndClosesApplication(t *testing.T) {
 }
 
 func TestNewWithConfigWiresMetadataRefreshControl(t *testing.T) {
-	app, err := NewWithConfig(testAppConfig(t))
-	if err != nil {
-		t.Fatalf("NewWithConfig returned error: %v", err)
-	}
+	app := newInitializedApp(t, testAppConfig(t))
 	defer app.Close()
 
 	runner, ok := app.RedisIngest.(*poller.RedisIngestRunner)
@@ -155,32 +148,25 @@ func TestNewWithConfigWiresMetadataRefreshControl(t *testing.T) {
 	if observer.IsNil() {
 		t.Fatal("expected metadata sync runner to observe redis ingest control messages")
 	}
-	if got := observer.Elem().Type().String(); got != "*app.MetadataSyncRunner" {
-		t.Fatalf("expected metadata sync runner observer, got %s", got)
-	}
-	metadataSyncPtr := reflect.ValueOf(app.MetadataSync).Pointer()
-	if got := observer.Elem().Pointer(); got != metadataSyncPtr {
-		t.Fatalf("expected redis ingest observer to share app metadata sync runner, got %x want %x", got, metadataSyncPtr)
+	if got := observer.Elem().Type().String(); got != "*app.UsageIngestBridge" {
+		t.Fatalf("expected one startup-to-business ingest bridge, got %s", got)
 	}
 	writerObserver := writer.Elem().Elem().FieldByName("observer")
 	if writerObserver.IsNil() {
 		t.Fatal("expected redis inbox writer observer")
 	}
-	if got := writerObserver.Elem().Type().String(); got != "*app.MetadataSyncRunner" {
-		t.Fatalf("expected redis inbox writer metadata sync observer, got %s", got)
+	if got := writerObserver.Elem().Type().String(); got != "*app.UsageIngestBridge" {
+		t.Fatalf("expected redis inbox writer to share the ingest bridge, got %s", got)
 	}
-	if got := writerObserver.Elem().Pointer(); got != metadataSyncPtr {
-		t.Fatalf("expected redis inbox writer observer to share app metadata sync runner, got %x want %x", got, metadataSyncPtr)
+	if got := writerObserver.Elem().Pointer(); got != observer.Elem().Pointer() {
+		t.Fatalf("expected control and writer to share the same bridge, got %x want %x", got, observer.Elem().Pointer())
 	}
 }
 
 func TestNewWithConfigExposesConfiguredCPAPublicURL(t *testing.T) {
 	cfg := testAppConfig(t)
 	cfg.CPAPublicURL = "https://cpa.public.example.com/"
-	app, err := NewWithConfig(cfg)
-	if err != nil {
-		t.Fatalf("NewWithConfig returned error: %v", err)
-	}
+	app := newInitializedApp(t, cfg)
 	defer app.Close()
 
 	resp := httptest.NewRecorder()
@@ -226,10 +212,7 @@ func TestNewWithConfigLeavesExistingUsageForBackgroundAggregationRunner(t *testi
 	cfg.SQLitePath = dbPath
 	cfg.LogFileEnabled = true
 	cfg.LogDir = logDir
-	app, err := NewWithConfig(cfg)
-	if err != nil {
-		t.Fatalf("NewWithConfig returned error: %v", err)
-	}
+	app := newInitializedApp(t, cfg)
 	defer app.Close()
 
 	// 断言：构造阶段不做同步 catch-up，工作保留给 App.Run 启动的后台任务。
@@ -246,7 +229,7 @@ func TestNewWithConfigLeavesExistingUsageForBackgroundAggregationRunner(t *testi
 	}
 }
 
-func TestNewWithConfigContinuesWhenRecentUsageCacheInitializationFails(t *testing.T) {
+func TestInitializeRejectsRecentUsageCacheFailureWithoutClosingDatabase(t *testing.T) {
 	cacheErr := errors.New("recent cache unavailable")
 	previousNewRecentUsageCache := newUsageRecentEventCache
 	newUsageRecentEventCache = func(*gorm.DB, repository.UsageRecentEventCacheOptions) (*repository.UsageRecentEventCache, error) {
@@ -254,40 +237,39 @@ func TestNewWithConfigContinuesWhenRecentUsageCacheInitializationFails(t *testin
 	}
 	t.Cleanup(func() { newUsageRecentEventCache = previousNewRecentUsageCache })
 
-	logDir := t.TempDir()
 	cfg := testAppConfig(t)
-	cfg.LogFileEnabled = true
-	cfg.LogDir = logDir
 	app, err := NewWithConfig(cfg)
 	if err != nil {
 		t.Fatalf("NewWithConfig returned error: %v", err)
 	}
 	defer app.Close()
-
+	if err := app.Initialize(context.Background()); !errors.Is(err, cacheErr) {
+		t.Fatalf("expected cache initialization failure, got %v", err)
+	}
 	if app.RecentUsageCache != nil {
 		t.Fatalf("expected recent usage cache to be nil after initialization failure, got %T", app.RecentUsageCache)
 	}
-	logContent := readAppLogFile(t, logDir)
-	if !strings.Contains(logContent, "| error |") || !strings.Contains(logContent, "recent usage event cache initialization failed") || !strings.Contains(logContent, cacheErr.Error()) {
-		t.Fatalf("expected error log for recent usage cache initialization failure, got %s", logContent)
+	if app.DB == nil {
+		t.Fatal("failed startup closed durable inbox database before App.Close")
+	}
+	sqlDB, err := app.DB.DB()
+	if err != nil || sqlDB.Ping() != nil {
+		t.Fatalf("failed startup database is unavailable: %v", err)
 	}
 }
 
 func TestNewWithConfigSkipsBackupRunnerWhenDisabled(t *testing.T) {
 	cfg := testAppConfig(t)
 	cfg.BackupEnabled = false
-	app, err := NewWithConfig(cfg)
-	if err != nil {
-		t.Fatalf("NewWithConfig returned error: %v", err)
-	}
+	app := newInitializedApp(t, cfg)
 	defer app.Close()
 	if app.BackupMaintenance != nil {
 		t.Fatal("expected database backup runner to be skipped when backups are disabled")
 	}
 }
 
-func TestRunStartsPollerAndMaintenanceIndependently(t *testing.T) {
-	// 准备：为每个后台 runner 配置独立启动信号，并使用非法端口让 HTTP 立即返回。
+func TestRunDoesNotStartWorkersBeforeShellListens(t *testing.T) {
+	// 无法监听时不能先让业务 worker 使用尚未迁移的库。
 	cfg := testAppConfig(t)
 	cfg.AppPort = "invalid-port"
 	pullStarted := make(chan struct{})
@@ -314,19 +296,15 @@ func TestRunStartsPollerAndMaintenanceIndependently(t *testing.T) {
 		return false
 	}
 	statusProvider := &appRunStub{started: make(chan struct{})}
-	app := &App{
-		Config:            &cfg,
-		Router:            gin.New(),
-		Poller:            statusProvider,
-		RedisIngest:       &appRunStub{started: pullStarted},
-		RedisProcess:      &appRunStub{started: processStarted},
-		UsageAggregation:  &appRunStub{started: aggregationStarted},
-		Maintenance:       maintenance,
-		MetadataSync:      metadataRunner,
-		BackupMaintenance: backupRunner,
+	app, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer app.Close()
+	app.Poller, app.RedisIngest, app.RedisProcess = statusProvider, &appRunStub{started: pullStarted}, &appRunStub{started: processStarted}
+	app.UsageAggregation, app.Maintenance, app.MetadataSync, app.BackupMaintenance = &appRunStub{started: aggregationStarted}, maintenance, metadataRunner, backupRunner
 
-	// 执行：启动 App，让所有后台任务共享同一生命周期 context。
+	// 监听失败先于初始化，所有 worker 均不得启动。
 	if err := app.Run(); err == nil {
 		t.Fatal("expected Run to return an error for invalid port")
 	}
@@ -340,8 +318,8 @@ func TestRunStartsPollerAndMaintenanceIndependently(t *testing.T) {
 	} {
 		select {
 		case <-started:
-		case <-time.After(time.Second):
-			t.Fatalf("expected %s runner to start", name)
+			t.Fatalf("%s runner started before the startup shell", name)
+		default:
 		}
 	}
 	select {
@@ -355,22 +333,20 @@ func TestRunSetsQuotaServiceContext(t *testing.T) {
 	cfg := testAppConfig(t)
 	cfg.AppPort = "invalid-port"
 	quotaService := &quotaContextRecorder{contextSet: make(chan context.Context, 1)}
-	app := &App{
-		Config:       &cfg,
-		Router:       gin.New(),
-		QuotaService: quotaService,
+	app, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer app.Close()
+	app.QuotaService = quotaService
 
 	if err := app.Run(); err == nil {
 		t.Fatal("expected Run to return an error for invalid port")
 	}
 	select {
-	case ctx := <-quotaService.contextSet:
-		if ctx == nil {
-			t.Fatal("expected quota service context to be non-nil")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("expected quota service context to be set")
+	case <-quotaService.contextSet:
+		t.Fatal("quota context was installed before the startup shell listened")
+	default:
 	}
 }
 
@@ -386,25 +362,22 @@ func TestRunCancelsBackgroundTasksWhenRouterStops(t *testing.T) {
 		close(backupCanceled)
 		return false
 	}
-	app := &App{
-		Config:            &cfg,
-		Router:            gin.New(),
-		BackupMaintenance: backupRunner,
+	app, err := NewWithConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer app.Close()
+	app.BackupMaintenance = backupRunner
 
 	if err := app.Run(); err == nil {
 		t.Fatal("expected Run to return an error for invalid port")
 	}
 	select {
 	case <-backupStarted:
-	case <-time.After(time.Second):
-		t.Fatal("expected database backup runner to start")
+		t.Fatal("backup runner started before the startup shell listened")
+	default:
 	}
-	select {
-	case <-backupCanceled:
-	case <-time.After(time.Second):
-		t.Fatal("expected database backup runner context to be canceled")
-	}
+	_ = backupCanceled
 }
 
 type quotaContextRecorder struct {
@@ -503,19 +476,19 @@ func readAppLogFile(t *testing.T, logDir string) string {
 func testAppConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{
-		AppPort:                "8318",
-		CPABaseURL:             "https://cpa.example.com",
-		CPAManagementKey:       "secret",
-		RedisQueueIdleInterval: time.Second,
-		MetadataSyncInterval:           30 * time.Second,
-		PricingCredentialSyncInterval:  15 * time.Minute,
-		SQLitePath:                     t.TempDir() + "/app.db",
-		BackupEnabled:          true,
-		BackupDir:              t.TempDir() + "/backups",
-		BackupRetentionDays:    7,
-		RequestTimeout:         5 * time.Second,
-		LogLevel:               "info",
-		LogFileEnabled:         false,
-		LogRetentionDays:       7,
+		AppPort:                       "8318",
+		CPABaseURL:                    "https://cpa.example.com",
+		CPAManagementKey:              "secret",
+		RedisQueueIdleInterval:        time.Second,
+		MetadataSyncInterval:          30 * time.Second,
+		PricingCredentialSyncInterval: 15 * time.Minute,
+		SQLitePath:                    t.TempDir() + "/app.db",
+		BackupEnabled:                 true,
+		BackupDir:                     t.TempDir() + "/backups",
+		BackupRetentionDays:           7,
+		RequestTimeout:                5 * time.Second,
+		LogLevel:                      "info",
+		LogFileEnabled:                false,
+		LogRetentionDays:              7,
 	}
 }

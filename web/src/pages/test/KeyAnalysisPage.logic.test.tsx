@@ -28,12 +28,21 @@ vi.mock('@/features/key-viewer/KeyViewerShell', () => ({
 }));
 
 vi.mock('@/components/usage', () => ({
-  AnalysisPanel: ({ analysis }: { analysis: AnalysisResponse | null }) => <div data-testid="analysis">{analysis?.timezone ?? 'empty'}</div>,
-  TimeRangeControl: () => <div data-testid="range-control" />,
+  AnalysisPanel: ({ analysis, loading, latencyDiagnostics, modelSpeedPreferenceScope, modelSpeedQueryKey, modelSpeedRefreshSignal }: { modelSpeedPreferenceScope: string | null; modelSpeedQueryKey: string; modelSpeedRefreshSignal?: { source: object; revision: number }; analysis: AnalysisResponse | null; loading: boolean; latencyDiagnostics: AnalysisLatencyDiagnostics | null }) => <>
+    <div data-testid="model-speed-scope">{modelSpeedPreferenceScope ?? 'temporary'}</div>
+    <div data-testid="model-speed-query">{modelSpeedQueryKey}</div>
+    <div data-testid="model-speed-replays">{modelSpeedRefreshSignal?.revision ?? 0}</div>
+    <div data-testid="analysis">{analysis?.timezone ?? 'empty'}</div>
+    <div data-testid="analysis-cost">{analysis?.cost_breakdown?.total_cost_usd ?? 'missing'}</div>
+    <div data-testid="analysis-loading">{String(loading)}</div>
+    <div data-testid="latency-points">{latencyDiagnostics?.total_points ?? 'missing'}</div>
+  </>,
+  TimeRangeControl: ({ onChange }: { onChange: (range: '8h') => void }) => <button data-testid="range-control" type="button" onClick={() => onChange('8h')}>range</button>,
 }));
 
 vi.mock('@/hooks/useMediaQuery', () => ({ useMediaQuery: () => false }));
-vi.mock('@/stores', () => ({
+vi.mock('@/stores', async (original) => ({
+  ...await original<typeof import('@/stores')>(),
   useThemeStore: (selector: (state: { resolvedTheme: 'white' }) => unknown) => selector({ resolvedTheme: 'white' }),
 }));
 vi.mock('react-i18next', () => ({
@@ -42,20 +51,20 @@ vi.mock('react-i18next', () => ({
 
 import { KeyAnalysisPage } from '../KeyAnalysisPage';
 
-const analysisResponse = (timezone: string): AnalysisResponse => ({
+const analysisResponse = (timezone: string, cost = 0): AnalysisResponse => ({
   granularity: 'hourly',
   timezone,
   token_usage: [],
   api_key_composition: [],
   model_composition: [],
-  auth_files_composition: [],
+  credentials_composition: [],
   ai_provider_composition: [],
   cost_breakdown: {
-    uncached_input_cost_usd: 0,
-    cache_read_cost_usd: 0,
-    cache_write_cost_usd: 0,
-    output_cost_usd: 0,
-    total_cost_usd: 0,
+    uncached_input_cost_usd: 0, cache_read_cost_usd: 0, cache_write_cost_usd: 0,
+    output_cost_usd: cost, total_cost_usd: cost, cost_available: true,
+  },
+  cost_summary: {
+    total_cost_usd: cost,
     cost_available: true,
   },
   model_efficiency: [],
@@ -197,4 +206,85 @@ describe('KeyAnalysisPage requests', () => {
 
     expect(onAuthRequired).toHaveBeenCalled();
   });
+
+  it('shows a temporary busy notice without a zero-cost result and keeps latency independent on first load', async () => {
+    apiMocks.fetchKeyAnalysis.mockRejectedValue(new ApiError('Cost statistics are being updated', 503, 'costs_busy'));
+    apiMocks.fetchKeyAnalysisLatency.mockResolvedValue({ ...latencyResponse, total_points: 3 });
+    const onAuthRequired = vi.fn();
+
+    await act(async () => root.render(<KeyAnalysisPage onNavigate={() => {}} onAuthRequired={onAuthRequired} />));
+
+    expect(container.textContent).toContain('key_analysis.costs_busy');
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('missing');
+    expect(container.querySelector('[data-testid="analysis-loading"]')?.textContent).toBe('true');
+    expect(container.querySelector('[data-testid="latency-points"]')?.textContent).toBe('3');
+    expect(onAuthRequired).not.toHaveBeenCalled();
+  });
+
+  it('keeps the same-range cost through a busy refresh, then replaces it on the next success', async () => {
+    apiMocks.fetchKeyAnalysis.mockResolvedValueOnce(analysisResponse('UTC', 4.25))
+      .mockRejectedValueOnce(new ApiError('busy', 503, 'costs_busy'))
+      .mockResolvedValueOnce(analysisResponse('UTC', 7.5));
+    apiMocks.fetchKeyAnalysisLatency.mockResolvedValue(latencyResponse);
+    const onAuthRequired = vi.fn();
+    await act(async () => root.render(<KeyAnalysisPage onNavigate={() => {}} onAuthRequired={onAuthRequired} />));
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('4.25');
+
+    const refresh = () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'usage_stats.refresh')!.click();
+    await act(async () => refresh());
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('4.25');
+    expect(container.textContent).toContain('key_analysis.costs_busy');
+    expect(onAuthRequired).not.toHaveBeenCalled();
+
+    await act(async () => refresh());
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('7.5');
+    expect(container.textContent).not.toContain('key_analysis.costs_busy');
+    expect(apiMocks.fetchKeyAnalysis).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not show another range or account cost when that request is busy', async () => {
+    apiMocks.fetchKeyAnalysis.mockResolvedValueOnce(analysisResponse('UTC', 4.25))
+      .mockRejectedValue(new ApiError('busy', 503, 'costs_busy'));
+    apiMocks.fetchKeyAnalysisLatency.mockResolvedValue(latencyResponse);
+    const firstKey = { id: '42', display_key: 'key-one' };
+    await act(async () => root.render(<KeyAnalysisPage apiKey={firstKey} onNavigate={() => {}} />));
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('4.25');
+    const initialQuery = container.querySelector('[data-testid="model-speed-query"]')!.textContent;
+
+    await act(async () => container.querySelector('[data-testid="range-control"]')?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('missing');
+    const nextRangeQuery = container.querySelector('[data-testid="model-speed-query"]')!.textContent;
+    expect(nextRangeQuery).not.toBe(initialQuery);
+    expect(container.textContent).toContain('key_analysis.costs_busy');
+
+    await act(async () => root.render(<KeyAnalysisPage apiKey={{ id: '99', display_key: 'key-two' }} onNavigate={() => {}} />));
+    expect(container.querySelector('[data-testid="analysis-cost"]')?.textContent).toBe('missing');
+    expect(apiMocks.fetchKeyAnalysis).toHaveBeenCalledTimes(3);
+    expect(container.querySelector('[data-testid="model-speed-query"]')!.textContent).not.toBe(nextRangeQuery);
+  });
+  it('scopes speed preferences by stable viewer id even for an empty window', async () => {
+    apiMocks.fetchKeyAnalysis.mockResolvedValue(analysisResponse('UTC'));
+    apiMocks.fetchKeyAnalysisLatency.mockResolvedValue(latencyResponse);
+    await act(async () => root.render(<KeyAnalysisPage apiKey={{ id: '42', display_key: 'same-masked-key', alias: 'one' }} onNavigate={vi.fn()} />));
+    expect(container.querySelector('[data-testid="model-speed-scope"]')?.textContent).toBe('key-viewer:42');
+    await act(async () => root.render(<KeyAnalysisPage apiKey={{ id: '99', display_key: 'same-masked-key', alias: 'two' }} onNavigate={vi.fn()} />));
+    expect(container.querySelector('[data-testid="model-speed-scope"]')?.textContent).toBe('key-viewer:99');
+    await act(async () => root.render(<KeyAnalysisPage apiKey={{ display_key: 'same-masked-key' }} onNavigate={vi.fn()} />));
+    expect(container.querySelector('[data-testid="model-speed-scope"]')?.textContent).toBe('temporary');
+  });
+
+  it('replays only successful manual core responses even if the latency section fails', async () => {
+    const response = { ...analysisResponse('UTC'), model_speed: { buckets: [], series: [] } };
+    apiMocks.fetchKeyAnalysis.mockResolvedValueOnce(response).mockResolvedValueOnce(response).mockRejectedValueOnce(new Error('failed'));
+    apiMocks.fetchKeyAnalysisLatency.mockResolvedValueOnce(latencyResponse).mockRejectedValueOnce(new Error('latency failed')).mockResolvedValueOnce(latencyResponse);
+    await act(async () => root.render(<KeyAnalysisPage onNavigate={vi.fn()} />));
+    const revision = () => container.querySelector('[data-testid="model-speed-replays"]')!.textContent;
+    const refresh = () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'usage_stats.refresh')!.click();
+    expect(revision()).toBe('0');
+    await act(async () => refresh());
+    expect(revision()).toBe('1');
+    await act(async () => refresh());
+    expect(revision()).toBe('1');
+  });
+
 });

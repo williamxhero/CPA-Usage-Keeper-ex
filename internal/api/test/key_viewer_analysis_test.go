@@ -30,14 +30,15 @@ func (s *keyViewerAnalysisUsageStub) GetAnalysis(_ context.Context, filter servi
 	}
 	return &servicedto.AnalysisSnapshot{
 		Granularity: servicedto.AnalysisGranularityHourly,
+		ModelSpeed:  servicedto.AnalysisModelSpeed{Series: []servicedto.AnalysisModelSpeedSeries{{Model: "claude-sonnet", TotalTokens: tokens}}},
 		APIKeyComposition: []servicedto.AnalysisCompositionItem{{
 			Key: key, TotalTokens: tokens, Requests: 1,
 		}},
 		ModelComposition: []servicedto.AnalysisCompositionItem{{
 			Key: "claude-sonnet", TotalTokens: tokens, Requests: 1,
 		}},
-		AuthFilesComposition: []servicedto.AnalysisCompositionItem{{
-			Key: "auth-file-private", Label: "Private Auth File", TotalTokens: tokens, Requests: 1,
+		CredentialsComposition: []servicedto.AnalysisCompositionItem{{
+			Key: "credential-private", Label: "Private Credential", TotalTokens: tokens, Requests: 1,
 		}},
 		AIProviderComposition: []servicedto.AnalysisCompositionItem{{
 			Key: "provider-private", Label: "Private Provider", TotalTokens: tokens, Requests: 1,
@@ -96,10 +97,15 @@ func TestAPIKeyViewerAnalysisForcesSessionKeyAndOmitsSourceComposition(t *testin
 		t.Fatalf("expected analysis filter to force session key 42, got %+v", usageProvider.analysisFilters)
 	}
 	var analysisPayload struct {
-		APIKeyComposition     []struct{ Key, Label string } `json:"api_key_composition"`
-		AuthFilesComposition  []json.RawMessage             `json:"auth_files_composition"`
-		AIProviderComposition []json.RawMessage             `json:"ai_provider_composition"`
-		Heatmap               struct {
+		ModelSpeed struct {
+			Series []struct {
+				TotalTokens int64 `json:"total_tokens"`
+			} `json:"series"`
+		} `json:"model_speed"`
+		APIKeyComposition      []struct{ Key, Label string } `json:"api_key_composition"`
+		CredentialsComposition []json.RawMessage             `json:"credentials_composition"`
+		AIProviderComposition  []json.RawMessage             `json:"ai_provider_composition"`
+		Heatmap                struct {
 			APIKeys      []string          `json:"api_keys"`
 			APIKeyLabels map[string]string `json:"api_key_labels"`
 		} `json:"heatmap"`
@@ -107,11 +113,14 @@ func TestAPIKeyViewerAnalysisForcesSessionKeyAndOmitsSourceComposition(t *testin
 	if err := json.Unmarshal(analysisResponse.Body.Bytes(), &analysisPayload); err != nil {
 		t.Fatalf("decode analysis response: %v", err)
 	}
+	if len(analysisPayload.ModelSpeed.Series) != 1 || analysisPayload.ModelSpeed.Series[0].TotalTokens != 42 {
+		t.Fatalf("speed must share viewer key filter: %+v", analysisPayload.ModelSpeed)
+	}
 	if len(analysisPayload.APIKeyComposition) != 1 || analysisPayload.APIKeyComposition[0].Key != "42" || analysisPayload.APIKeyComposition[0].Label != "Viewer Key" {
 		t.Fatalf("expected only the session key identity, got %+v", analysisPayload.APIKeyComposition)
 	}
-	if len(analysisPayload.AuthFilesComposition) != 0 || len(analysisPayload.AIProviderComposition) != 0 {
-		t.Fatalf("expected source composition to be omitted, got auth=%s provider=%s", analysisPayload.AuthFilesComposition, analysisPayload.AIProviderComposition)
+	if len(analysisPayload.CredentialsComposition) != 0 || len(analysisPayload.AIProviderComposition) != 0 {
+		t.Fatalf("expected source composition to be omitted, got auth=%s provider=%s", analysisPayload.CredentialsComposition, analysisPayload.AIProviderComposition)
 	}
 	if len(analysisPayload.Heatmap.APIKeys) != 1 || analysisPayload.Heatmap.APIKeys[0] != "42" || analysisPayload.Heatmap.APIKeyLabels["42"] != "Viewer Key" {
 		t.Fatalf("expected heatmap to use only the session key identity, got %+v", analysisPayload.Heatmap)

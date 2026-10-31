@@ -238,6 +238,7 @@ func parseClaudeUsagePayload(response *apicall.Response) (*ClaudeUsagePayload, e
 		return nil, err
 	}
 	return &ClaudeUsagePayload{
+		ResetGrants:       parseClaudeResetGrants(object["cedar_ember"]),
 		FiveHour:          parseClaudeUsageWindow(objectField(object, "five_hour", "fiveHour")),
 		SevenDay:          parseClaudeUsageWindow(objectField(object, "seven_day", "sevenDay")),
 		SevenDayOAuthApps: parseClaudeUsageWindow(objectField(object, "seven_day_oauth_apps", "sevenDayOauthApps")),

@@ -16,7 +16,7 @@ func httpRawUsageMessage(item []byte) string
 
 func TestHTTPPullSourcePreservesNullPayloadForBatchCounting(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v0/management/usage-queue" {
+		if r.URL.Path != "/v8/management/observability/usage/queue" {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		if got := r.URL.Query().Get("count"); got != "2" {

@@ -6,16 +6,59 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"cpa-usage-keeper/internal/activity"
 	"cpa-usage-keeper/internal/entities"
 	"cpa-usage-keeper/internal/overview"
 	"cpa-usage-keeper/internal/poller"
+	"cpa-usage-keeper/internal/pricing"
 	"cpa-usage-keeper/internal/repository"
 
 	"gorm.io/gorm"
 )
+
+// priceRunnerFixtureEvents 只给模拟正常聚合的合成事件写明空价格表的结果；NULL 故障测试不调用。
+func priceRunnerFixtureEvents(events []entities.UsageEvent) []entities.UsageEvent {
+	resolver := pricing.NewCatalog(pricing.EmptySnapshot()).NewResolver()
+	for index := range events {
+		fee := resolver.CalculateFee(repository.UsageEventCostSubject(events[index]))
+		events[index].CostUSD = &fee.TotalCostUSD
+		events[index].CostAvailable = &fee.Available
+	}
+	return events
+}
+
+// TestUsageAggregationRunnerKeepsIndependentCursorsOnMissingFee 验证 Overview 缺费不误阻断其它聚合或推进自身水位。
+func TestUsageAggregationRunnerKeepsIndependentCursorsOnMissingFee(t *testing.T) {
+	db := openUsageAggregationRunnerDatabase(t)
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.Local)
+	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{EventKey: "unpriced-old", APIGroupKey: "key-a", Model: "model-a", Timestamp: now.Add(-time.Minute), TotalTokens: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	runner := poller.NewStoredUsageAggregationMaintenanceRunner(db, poller.UsageAggregationRunnerOptions{
+		NowFunc: func() time.Time { return now },
+	})
+	result, err := runner.RunOnce(context.Background())
+	if err == nil || !result.Processed {
+		t.Fatalf("expected independent rollups to progress while Overview rejects NULL fee: result=%+v err=%v", result, err)
+	}
+	snapshot, err := repository.LoadUsageAggregationCheckpointSnapshot(context.Background(), db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.OverviewCursor != 0 || snapshot.ActivityCursor != 1 || snapshot.LatencyCursor != 1 {
+		t.Fatalf("missing fee changed unrelated aggregation cursors: %+v", snapshot)
+	}
+	if err := db.Model(&entities.UsageEvent{}).Where("id = ?", 1).Updates(map[string]any{"cost_usd": 0.5, "cost_available": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("retry Overview after fee backfill: %v", err)
+	}
+	assertUsageAggregationCheckpoint(t, db, string(entities.UsageAggregationCheckpointOverview), 1)
+}
 
 func TestUsageAggregationRunnerSharedTurnReadsOneEventPageAndAdvancesAllRollups(t *testing.T) {
 	// 三个 cursor 相等时，核心收益必须是同一事件页只读一次，而不是三个兼容入口各查一次。
@@ -23,10 +66,10 @@ func TestUsageAggregationRunnerSharedTurnReadsOneEventPageAndAdvancesAllRollups(
 	now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
 	generate := true
 	ttftMS := int64(120)
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{
 		{EventKey: "shared-1", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(-time.Minute), Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 900, TotalTokens: 10},
 		{EventKey: "shared-2", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now, Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 1100, TotalTokens: 20},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("insert shared runner events: %v", err)
 	}
 
@@ -70,11 +113,11 @@ func TestUsageAggregationRunnerFallbackCatchesUpEachCursorThenRestoresSharedRead
 	now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
 	generate := true
 	ttftMS := int64(100)
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{
 		{EventKey: "fallback-1", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(-2 * time.Minute), Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 800},
 		{EventKey: "fallback-2", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(-time.Minute), Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 900},
 		{EventKey: "fallback-3", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now, Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 1000},
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("insert fallback events: %v", err)
 	}
 	var stored []entities.UsageEvent
@@ -82,7 +125,10 @@ func TestUsageAggregationRunnerFallbackCatchesUpEachCursorThenRestoresSharedRead
 		t.Fatalf("load fallback events: %v", err)
 	}
 	// Overview 先到 2、Activity 只到 1、Latency 仍为 0，稳定进入 fallback。
-	hourly, daily, _ := overview.BuildRows(stored[:2])
+	hourly, daily, _, buildErr := overview.BuildRows(stored[:2])
+	if buildErr != nil {
+		t.Fatalf("build overview fallback seed: %v", buildErr)
+	}
 	if err := repository.ApplyUsageOverviewAggregationPage(context.Background(), db, 0, 2, hourly, daily, now); err != nil {
 		t.Fatalf("seed overview fallback cursor: %v", err)
 	}
@@ -119,9 +165,9 @@ func TestUsageAggregationRunnerFallbackCatchesUpEachCursorThenRestoresSharedRead
 	if _, err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run fallback identity turn: %v", err)
 	}
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 		EventKey: "fallback-4", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(time.Minute), Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 1100,
-	}}); err != nil {
+	}})); err != nil {
 		t.Fatalf("insert post-fallback event: %v", err)
 	}
 	var fourth entities.UsageEvent
@@ -175,9 +221,9 @@ func TestUsageAggregationRunnerPreservesEarlierRollupCommitsWhenLaterWriteFails(
 			now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
 			generate := true
 			ttftMS := int64(100)
-			if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+			if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 				EventKey: "write-failure", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now, Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 900,
-			}}); err != nil {
+			}})); err != nil {
 				t.Fatalf("insert write-failure event: %v", err)
 			}
 			if err := db.Exec(testCase.triggerSQL).Error; err != nil {
@@ -203,13 +249,13 @@ func TestUsageAggregationRunnerIdentityFailureDoesNotFreezeLaterRollups(t *testi
 	// Identity 持续失败时，已经到达的新 usage 目标仍必须开启自己的 5 秒窗口并推进三类全局聚合。
 	db := openUsageAggregationRunnerDatabase(t)
 	now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
-	identity := entities.UsageIdentity{Name: "blocked-auth", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "blocked-auth", Type: "codex"}
+	identity := entities.UsageIdentity{Name: "blocked-auth", AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "blocked-auth", Type: "codex"}
 	if err := db.Create(&identity).Error; err != nil {
 		t.Fatalf("seed identity that will fail aggregation: %v", err)
 	}
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 		EventKey: "identity-block-first", APIGroupKey: "provider-a", Model: "model-a", AuthType: "oauth", AuthIndex: identity.Identity, Timestamp: now, TotalTokens: 1,
-	}}); err != nil {
+	}})); err != nil {
 		t.Fatalf("seed first event: %v", err)
 	}
 	if err := db.Exec(`CREATE TRIGGER fail_identity_without_blocking_rollups
@@ -226,9 +272,9 @@ func TestUsageAggregationRunnerIdentityFailureDoesNotFreezeLaterRollups(t *testi
 			usageAggregationCheckpointCursor(t, db, entities.UsageAggregationCheckpointLatency) == 1
 	})
 
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 		EventKey: "identity-block-second", APIGroupKey: "provider-a", Model: "model-a", AuthType: "oauth", AuthIndex: identity.Identity, Timestamp: now.Add(time.Minute), TotalTokens: 1,
-	}}); err != nil {
+	}})); err != nil {
 		t.Fatalf("seed second event: %v", err)
 	}
 	var second entities.UsageEvent
@@ -254,7 +300,7 @@ func TestUsageAggregationRunnerSkipsEmptyIdentityTurnBetweenRollupPages(t *testi
 			EventKey: fmt.Sprintf("skip-empty-identity-%04d", index), APIGroupKey: "provider-a", Model: "model-a", Timestamp: now, TotalTokens: 1,
 		})
 	}
-	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents(events)); err != nil {
 		t.Fatalf("seed multi-page rollup backlog: %v", err)
 	}
 
@@ -279,9 +325,9 @@ func TestUsageAggregationRunnerStopsBetweenRollupWritesWhenCPAInboxAppears(t *te
 	now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
 	generate := true
 	ttftMS := int64(100)
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 		EventKey: "inbox-between-writes", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now, Generate: &generate, TTFTMS: &ttftMS, LatencyMS: 900,
-	}}); err != nil {
+	}})); err != nil {
 		t.Fatalf("insert inbox-priority event: %v", err)
 	}
 
@@ -319,7 +365,7 @@ func TestUsageAggregationRunnerAlternatesOneRollupPageWithOneIdentityPage(t *tes
 	events := make([]entities.UsageEvent, 0, 1001)
 	for index := 1; index <= 27; index++ {
 		identity := fmt.Sprintf("fair-auth-%02d", index)
-		identities = append(identities, entities.UsageIdentity{Name: identity, AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: identity, Type: "codex"})
+		identities = append(identities, entities.UsageIdentity{Name: identity, AuthType: entities.UsageIdentityAuthTypeCredential, Identity: identity, Type: "codex"})
 	}
 	for index := 1; index <= 1001; index++ {
 		identity := identities[(index-1)%len(identities)].Identity
@@ -328,7 +374,7 @@ func TestUsageAggregationRunnerAlternatesOneRollupPageWithOneIdentityPage(t *tes
 	if err := db.Create(&identities).Error; err != nil {
 		t.Fatalf("seed fair identities: %v", err)
 	}
-	if _, _, err := repository.InsertUsageEvents(db, events); err != nil {
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents(events)); err != nil {
 		t.Fatalf("seed fair events: %v", err)
 	}
 
@@ -359,7 +405,7 @@ func TestUsageAggregationRunnerRescansIdentityHeadAfterNotificationDuringPagedPa
 	identities := make([]entities.UsageIdentity, 0, repository.UsageIdentityAggregationBatchSize+1)
 	for index := 1; index <= repository.UsageIdentityAggregationBatchSize+1; index++ {
 		identity := fmt.Sprintf("rescan-auth-%02d", index)
-		identities = append(identities, entities.UsageIdentity{Name: identity, AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: identity, Type: "codex"})
+		identities = append(identities, entities.UsageIdentity{Name: identity, AuthType: entities.UsageIdentityAuthTypeCredential, Identity: identity, Type: "codex"})
 	}
 	if err := db.Create(&identities).Error; err != nil {
 		t.Fatalf("seed rescan identities: %v", err)
@@ -445,58 +491,65 @@ func TestUsageAggregationRunnerStaysDatabaseSilentAfterStartupCatchUp(t *testing
 
 func TestUsageAggregationRunnerDebounceDoesNotResetAndStartupDoesNotWait(t *testing.T) {
 	t.Run("startup catch-up is immediate", func(t *testing.T) {
-		db := openUsageAggregationRunnerDatabase(t)
-		now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
-		if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{EventKey: "startup-immediate", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now}}); err != nil {
-			t.Fatalf("insert startup event: %v", err)
-		}
-		runner := newUsageAggregationRunnerAt(db, now, 500*time.Millisecond)
-		stop := startUsageAggregationTestRunner(t, runner)
-		waitForUsageAggregationRunnerCondition(t, 300*time.Millisecond, func() bool {
-			return usageAggregationCheckpointCursor(t, db, entities.UsageAggregationCheckpointOverview) == 1
+		synctest.Test(t, func(t *testing.T) {
+			db := openUsageAggregationRunnerDatabase(t)
+			now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
+			if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{EventKey: "startup-immediate", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now}})); err != nil {
+				t.Fatalf("insert startup event: %v", err)
+			}
+			runner := newUsageAggregationRunnerAt(db, now, 500*time.Millisecond)
+			stop := startUsageAggregationTestRunner(t, runner)
+			// 只等待当前工作阻塞，不推进虚拟时间；启动追赶不能依赖 debounce。
+			synctest.Wait()
+			assertUsageAggregationCheckpointValue(t, db, entities.UsageAggregationCheckpointOverview, 1)
+			stop()
 		})
-		stop()
 	})
 
 	t.Run("later notifications share the first fixed window", func(t *testing.T) {
-		db := openUsageAggregationRunnerDatabase(t)
-		now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
-		runner := newUsageAggregationRunnerAt(db, now, 500*time.Millisecond)
-		// 同步完成空库启动扫描，后续事件只能走 debounce 路径。
-		for range 2 {
-			if _, err := runner.RunOnce(context.Background()); err != nil {
-				t.Fatalf("complete startup catch-up: %v", err)
+		synctest.Test(t, func(t *testing.T) {
+			db := openUsageAggregationRunnerDatabase(t)
+			now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
+			runner := newUsageAggregationRunnerAt(db, now, 500*time.Millisecond)
+			// 同步完成空库启动扫描，后续事件只能走 debounce 路径。
+			for range 2 {
+				if _, err := runner.RunOnce(context.Background()); err != nil {
+					t.Fatalf("complete startup catch-up: %v", err)
+				}
 			}
-		}
-		stop := startUsageAggregationTestRunner(t, runner)
-		if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{EventKey: "debounce-1", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now}}); err != nil {
-			t.Fatalf("insert first debounce event: %v", err)
-		}
-		var first entities.UsageEvent
-		if err := db.Where("event_key = ?", "debounce-1").Take(&first).Error; err != nil {
-			t.Fatalf("load first debounce event: %v", err)
-		}
-		startedAt := time.Now()
-		runner.NotifyUsageEventsCommitted([]entities.UsageEvent{first})
-		time.Sleep(300 * time.Millisecond)
-		if usageAggregationCheckpointCursor(t, db, entities.UsageAggregationCheckpointOverview) != 0 {
-			t.Fatal("rollups ran before the fixed debounce window elapsed")
-		}
-		if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{EventKey: "debounce-2", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(time.Minute)}}); err != nil {
-			t.Fatalf("insert second debounce event: %v", err)
-		}
-		var second entities.UsageEvent
-		if err := db.Where("event_key = ?", "debounce-2").Take(&second).Error; err != nil {
-			t.Fatalf("load second debounce event: %v", err)
-		}
-		runner.NotifyUsageEventsCommitted([]entities.UsageEvent{second})
-		waitForUsageAggregationRunnerCondition(t, 350*time.Millisecond, func() bool {
-			return usageAggregationCheckpointCursor(t, db, entities.UsageAggregationCheckpointOverview) == second.ID
+			stop := startUsageAggregationTestRunner(t, runner)
+			if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{EventKey: "debounce-1", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now}})); err != nil {
+				t.Fatalf("insert first debounce event: %v", err)
+			}
+			var first entities.UsageEvent
+			if err := db.Where("event_key = ?", "debounce-1").Take(&first).Error; err != nil {
+				t.Fatalf("load first debounce event: %v", err)
+			}
+			runner.NotifyUsageEventsCommitted([]entities.UsageEvent{first})
+			// 先让 runner 建立计时器，再推进虚拟时间，固定首个窗口的起点。
+			synctest.Wait()
+			time.Sleep(300 * time.Millisecond)
+			if usageAggregationCheckpointCursor(t, db, entities.UsageAggregationCheckpointOverview) != 0 {
+				t.Fatal("rollups ran before the fixed debounce window elapsed")
+			}
+			if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{EventKey: "debounce-2", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(time.Minute)}})); err != nil {
+				t.Fatalf("insert second debounce event: %v", err)
+			}
+			var second entities.UsageEvent
+			if err := db.Where("event_key = ?", "debounce-2").Take(&second).Error; err != nil {
+				t.Fatalf("load second debounce event: %v", err)
+			}
+			runner.NotifyUsageEventsCommitted([]entities.UsageEvent{second})
+			synctest.Wait()
+			// 首次通知后的 499ms 仍不能聚合，500ms 必须覆盖第二次通知的目标。
+			time.Sleep(199 * time.Millisecond)
+			synctest.Wait()
+			assertUsageAggregationCheckpointValue(t, db, entities.UsageAggregationCheckpointOverview, 0)
+			time.Sleep(time.Millisecond)
+			synctest.Wait()
+			assertUsageAggregationCheckpointValue(t, db, entities.UsageAggregationCheckpointOverview, second.ID)
+			stop()
 		})
-		if elapsed := time.Since(startedAt); elapsed >= 700*time.Millisecond {
-			t.Fatalf("second notification reset debounce window, elapsed=%s", elapsed)
-		}
-		stop()
 	})
 }
 
@@ -504,11 +557,11 @@ func TestUsageAggregationRunnerBackgroundFailureStillLetsIdentityRun(t *testing.
 	// Activity 持续失败时 Overview、Latency 仍独立提交，下一 turn 的 Identity 也必须获得 writer。
 	db := openUsageAggregationRunnerDatabase(t)
 	now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
-	identity := entities.UsageIdentity{Name: "failure-auth", AuthType: entities.UsageIdentityAuthTypeAuthFile, Identity: "failure-auth", Type: "codex"}
+	identity := entities.UsageIdentity{Name: "failure-auth", AuthType: entities.UsageIdentityAuthTypeCredential, Identity: "failure-auth", Type: "codex"}
 	if err := db.Create(&identity).Error; err != nil {
 		t.Fatalf("insert failure identity: %v", err)
 	}
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{EventKey: "failure-event", APIGroupKey: "provider-a", Model: "model-a", AuthType: "oauth", AuthIndex: identity.Identity, Timestamp: now, TotalTokens: 1}}); err != nil {
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{EventKey: "failure-event", APIGroupKey: "provider-a", Model: "model-a", AuthType: "oauth", AuthIndex: identity.Identity, Timestamp: now, TotalTokens: 1}})); err != nil {
 		t.Fatalf("insert failure event: %v", err)
 	}
 	if err := db.Exec(`CREATE TRIGGER fail_background_activity
@@ -532,9 +585,9 @@ func TestUsageAggregationRunnerPersistentRollupFailureDoesNotFreezeHealthyRollup
 	// Activity 持续失败后，新 5 秒窗口仍必须让 Overview/Latency 按自己的 checkpoint 处理后续事件。
 	db := openUsageAggregationRunnerDatabase(t)
 	now := time.Date(2026, 7, 26, 12, 30, 0, 0, time.UTC)
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 		EventKey: "persistent-failure-1", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now, TotalTokens: 1,
-	}}); err != nil {
+	}})); err != nil {
 		t.Fatalf("insert first persistent-failure event: %v", err)
 	}
 	if err := db.Exec(`CREATE TRIGGER fail_persistent_activity
@@ -550,9 +603,9 @@ func TestUsageAggregationRunnerPersistentRollupFailureDoesNotFreezeHealthyRollup
 			usageAggregationCheckpointCursor(t, db, entities.UsageAggregationCheckpointLatency) == 1
 	})
 
-	if _, _, err := repository.InsertUsageEvents(db, []entities.UsageEvent{{
+	if _, _, err := repository.InsertUsageEvents(db, priceRunnerFixtureEvents([]entities.UsageEvent{{
 		EventKey: "persistent-failure-2", APIGroupKey: "provider-a", Model: "model-a", Timestamp: now.Add(time.Minute), TotalTokens: 2,
-	}}); err != nil {
+	}})); err != nil {
 		t.Fatalf("insert second persistent-failure event: %v", err)
 	}
 	var second entities.UsageEvent

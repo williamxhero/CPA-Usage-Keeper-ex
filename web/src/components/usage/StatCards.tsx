@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Line } from 'react-chartjs-2';
+import { Line } from './charts/UsageChart';
 import {
   IconDiamond,
   IconDollarSign,

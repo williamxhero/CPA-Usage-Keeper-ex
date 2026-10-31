@@ -12,7 +12,8 @@ import (
 
 func TestAnalysisModelUsageAggregatesHourlyBucketsByNormalizedModel(t *testing.T) {
 	db := openTestDatabase(t)
-	start := time.Date(2026, 8, 1, 10, 0, 0, 0, time.Local)
+	// 与实际 Overview 聚合一致，小时桶按绝对整点存储，不能假定本地整点也对齐。
+	start := time.Date(2026, 8, 1, 10, 0, 0, 0, time.Local).Truncate(time.Hour)
 	end := start.Add(2 * time.Hour)
 	if err := db.Create(&[]entities.CPAAPIKey{
 		{APIKey: "group-a", DisplayKey: "sk-***a"},
@@ -21,20 +22,20 @@ func TestAnalysisModelUsageAggregatesHourlyBucketsByNormalizedModel(t *testing.T
 		t.Fatalf("seed API keys: %v", err)
 	}
 	if err := db.Create(&[]entities.UsageOverviewHourlyStat{
-		{BucketStart: start, APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 1, TotalTokens: 100},
-		{BucketStart: start, APIGroupKey: "group-b", Model: " model-alpha ", RequestCount: 2, TotalTokens: 50},
-		{BucketStart: start, APIGroupKey: "group-a", Model: "model-beta", RequestCount: 4, TotalTokens: 200},
-		{BucketStart: start, APIGroupKey: "group-a", Model: " ", RequestCount: 2, TotalTokens: 10},
-		{BucketStart: start, APIGroupKey: "group-b", Model: "", RequestCount: 3, TotalTokens: 15},
-		{BucketStart: start.Add(time.Hour), APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 1, TotalTokens: 25},
-		{BucketStart: start.Add(time.Hour), APIGroupKey: "group-a", Model: "model-gamma", RequestCount: 5, TotalTokens: 300},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 1, TotalTokens: 100},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-b", Model: " model-alpha ", RequestCount: 2, TotalTokens: 50},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-a", Model: "model-beta", RequestCount: 4, TotalTokens: 200},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-a", Model: " ", RequestCount: 2, TotalTokens: 10},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-b", Model: "", RequestCount: 3, TotalTokens: 15},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start.Add(time.Hour), APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 1, TotalTokens: 25},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start.Add(time.Hour), APIGroupKey: "group-a", Model: "model-gamma", RequestCount: 5, TotalTokens: 300},
 	}).Error; err != nil {
 		t.Fatalf("seed hourly stats: %v", err)
 	}
 
 	analysis, err := repository.BuildAnalysisWithFilter(db, repodto.UsageQueryFilter{
 		Range: "custom", CustomUnit: "hour", StartTime: &start, EndTime: &end, EndExclusive: true,
-	}, emptyPricingResolverForTest())
+	})
 	if err != nil {
 		t.Fatalf("BuildAnalysisWithFilter: %v", err)
 	}
@@ -59,16 +60,16 @@ func TestAnalysisModelUsageUsesDailyBuckets(t *testing.T) {
 		t.Fatalf("seed API key: %v", err)
 	}
 	if err := db.Create(&[]entities.UsageOverviewDailyStat{
-		{BucketStart: start, APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 2, TotalTokens: 120},
-		{BucketStart: start, APIGroupKey: "group-a", Model: "model-beta", RequestCount: 3, TotalTokens: 240},
-		{BucketStart: start.AddDate(0, 0, 1), APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 4, TotalTokens: 360},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 2, TotalTokens: 120},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start, APIGroupKey: "group-a", Model: "model-beta", RequestCount: 3, TotalTokens: 240},
+		{CostUSD: analysisCostPtr(0), UnavailableCostCount: analysisCountPtr(1), BucketStart: start.AddDate(0, 0, 1), APIGroupKey: "group-a", Model: "model-alpha", RequestCount: 4, TotalTokens: 360},
 	}).Error; err != nil {
 		t.Fatalf("seed daily stats: %v", err)
 	}
 
 	analysis, err := repository.BuildAnalysisWithFilter(db, repodto.UsageQueryFilter{
 		Range: "custom", CustomUnit: "day", StartTime: &start, EndTime: &end, EndExclusive: true,
-	}, emptyPricingResolverForTest())
+	})
 	if err != nil {
 		t.Fatalf("BuildAnalysisWithFilter: %v", err)
 	}
