@@ -12,6 +12,19 @@
 
 <h1 align="center">CPA Usage Keeper</h1>
 
+## 本 fork 的功能
+
+相对上游 Usage Keeper，这条主干增加：
+
+- 凭证默认定价、指定模型倍率，以及固定资费。
+- 命名渠道、渠道成员，以及渠道上的模型倍率或固定价格。
+- 官方模型价格目录，和凭证模型价格矩阵。
+- 请求上同时给出两套成本估算，并说明只凭凭证时为什么对不上。
+- 凭证主体自动同步；标签里只出现掩码后的密钥提示。
+- 默认监听端口 `8318`。
+
+完整清单见 [README-ex.md](README-ex.md)。
+
 <p align="center">Every flow leaves a trace.</p>
 
 <p align="center">
