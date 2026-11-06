@@ -327,6 +327,7 @@ func buildReadyApp(cfg config.Config, db, readDB *gorm.DB, logCloser io.Closer, 
 				StoredUsageOverview:    service.NewStoredUsageOverviewService(db),
 				StoredUsageComparisons: service.NewStoredUsageComparisonsService(db),
 				CredentialSync:         metadataSyncRunner,
+				Models:             cpaClient,
 				Status: api.StatusRouteConfig{
 					CPAPublicURL:               cfg.CPAPublicURL,
 					CPARequestLogAccessEnabled: cfg.CPARequestLogAccessEnabled,

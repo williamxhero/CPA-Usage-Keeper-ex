@@ -69,6 +69,7 @@ type OptionalProviders struct {
 	StoredUsageComparisons service.StoredUsageComparisonsProvider
 	Status                 StatusRouteConfig
 	CredentialSync         service.PricingCredentialSyncProvider
+	Models                 service.ModelsFetcher
 }
 
 // newRouterEngine 为启动外壳和完整业务路由装配相同的可信代理与异常恢复设置。
@@ -127,6 +128,7 @@ func NewRouter(
 	var storedUsageEventsProvider service.StoredUsageEventsProvider
 	var storedUsageOverviewProvider service.StoredUsageOverviewProvider
 	var storedUsageComparisonsProvider service.StoredUsageComparisonsProvider
+	var modelsProvider service.ModelsFetcher
 	var statusConfig StatusRouteConfig
 	var credentialSyncProvider service.PricingCredentialSyncProvider
 	if len(optionalProviders) > 0 {
@@ -146,6 +148,7 @@ func NewRouter(
 		storedUsageEventsProvider = optionalProviders[0].StoredUsageEvents
 		storedUsageOverviewProvider = optionalProviders[0].StoredUsageOverview
 		storedUsageComparisonsProvider = optionalProviders[0].StoredUsageComparisons
+		modelsProvider = optionalProviders[0].Models
 		statusConfig = optionalProviders[0].Status
 		credentialSyncProvider = optionalProviders[0].CredentialSync
 	}
@@ -185,6 +188,7 @@ func NewRouter(
 	if storedRecalculationProvider != nil {
 		registerPricingRecalculationRoutes(adminProtected, storedRecalculationProvider)
 	}
+	registerModelsRoutes(adminProtected, modelsProvider)
 	registerQuotaRoutes(adminProtected, quotaProvider)
 	if rankingProvider != nil {
 		rankinghttpapi.RegisterRoutes(adminProtected, rankingProvider)
