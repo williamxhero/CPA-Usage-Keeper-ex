@@ -7,4 +7,17 @@
     <rect x="116" y="51" width="47" height="61" rx="10" fill="#fb5a5a" fill-opacity=".82" transform="rotate(15 139.5 81.5)" />
     <rect x="94" y="70" width="58" height="40" rx="10" fill="#db2777" fill-opacity=".82" transform="rotate(2 123 90)" />
   </g>
+
+  <defs>
+    <linearGradient id="keeper-icon-ex-badge-gradient" x1="114" y1="74" x2="160" y2="120" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19C4FF"/>
+      <stop offset="1" stop-color="#2A3EB8"/>
+    </linearGradient>
+  </defs>
+  <g data-cpa-ex-badge="1">
+    <rect x="114" y="74" width="46" height="46" rx="12" fill="url(#keeper-icon-ex-badge-gradient)" stroke="#FFFFFF" stroke-width="2.5"/>
+    <path d="M124 111 151 84" stroke="#B8F4FF" stroke-width="6.5" stroke-linecap="round" opacity=".82"/>
+    <text x="137" y="101" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="20" font-style="italic" font-weight="700" text-anchor="middle" dominant-baseline="central">ex</text>
+    <circle cx="151" cy="85" r="1.5" fill="#FFFFFF"/>
+  </g>
 </svg>

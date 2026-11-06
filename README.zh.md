@@ -12,6 +12,8 @@
 
 <h1 align="center">CPA Usage Keeper</h1>
 
+本 fork 的主要功能见 [README-ex.md](README-ex.md)。
+
 <p align="center">万千流转，皆有迹可循。</p>
 
 <p align="center">

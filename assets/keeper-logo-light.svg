@@ -9,4 +9,17 @@
     <rect x="94" y="70" width="58" height="40" rx="10" fill="#db2777" fill-opacity=".82" transform="rotate(2 123 90)" />
   </g>
   <text x="220" y="111" fill="#111111" font-family="Arial, Helvetica, sans-serif" font-size="76" font-weight="800" letter-spacing="10">KEEPER</text>
+
+  <defs>
+    <linearGradient id="keeper-ex-badge-gradient" x1="112" y1="84" x2="160" y2="132" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#19C4FF"/>
+      <stop offset="1" stop-color="#2A3EB8"/>
+    </linearGradient>
+  </defs>
+  <g data-cpa-ex-badge="1">
+    <rect x="110" y="84" width="48" height="48" rx="12" fill="url(#keeper-ex-badge-gradient)" stroke="#FFFFFF" stroke-width="2.5"/>
+    <path d="M120 119 149 90" stroke="#B8F4FF" stroke-width="7" stroke-linecap="round" opacity=".82"/>
+    <text x="134" y="108" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="21" font-style="italic" font-weight="700" text-anchor="middle" dominant-baseline="central">ex</text>
+    <circle cx="149" cy="91" r="1.5" fill="#FFFFFF"/>
+  </g>
 </svg>
