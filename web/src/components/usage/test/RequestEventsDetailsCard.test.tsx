@@ -80,11 +80,13 @@ describe('RequestEventsDetailsCard', () => {
     expect(tableValues(html).Cost).toBe(expected);
     expect(html).not.toContain('$99.00');
   });
-  it('renders the event title, total and incremental loading status', () => {
-    const html = renderCard();
+  it('renders the event title, counts and load-more action', () => {
+    const html = renderCard({ hasMore: true, totalCount: 500, onLoadMore: () => undefined });
     expect(html).toContain('Request Event Log');
-    expect(html).toContain('120 total events');
-    expect(html).toContain('Loaded 1 / 120');
+    expect(html).toContain('500 total events');
+    expect(html).toContain('Loaded 1 / 500');
+    expect(html).toContain('aria-rowcount="501"');
+    expect(html).toContain('Load more');
     for (const obsoleteControl of ['Event Stream', 'Rows per page', '>Previous<', '>Next<']) {
       expect(html).not.toContain(obsoleteControl);
     }
@@ -272,15 +274,6 @@ describe('RequestEventsDetailsCard', () => {
     expect(isRequestEventColumnSelectionControlled(['timestamp'], () => undefined)).toBe(true);
     expect(isRequestEventColumnSelectionControlled(undefined, () => undefined)).toBe(false);
     expect(isRequestEventColumnSelectionControlled(['timestamp'], undefined)).toBe(false);
-  });
-
-  it('shows loaded status, a load-more action and the full accessible row count', () => {
-    const html = renderCard({ hasMore: true, totalCount: 500, onLoadMore: () => undefined });
-    expect(html).toContain('Loaded 1 / 500');
-    expect(html).toContain('Load more');
-    expect(html).not.toContain('>Previous<');
-    expect(html).not.toContain('>Next<');
-    expect(html).toContain('aria-rowcount="501"');
   });
 
   it('preloads cursor batches near the bottom while ignoring an empty scroller', () => {

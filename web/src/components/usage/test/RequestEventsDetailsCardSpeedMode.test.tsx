@@ -65,7 +65,7 @@ const mountCard = async (events: UsageEvent[]) => {
 };
 
 const extractSpeedModeCells = (html: string) => (
-  Array.from(html.matchAll(/<tr><td\b[^>]*>(.*?)<\/td><\/tr>/gs), (match) => match[1])
+  Array.from(html.matchAll(/<tr\b[^>]*><td\b[^>]*>(.*?)<\/td><\/tr>/gs), (match) => match[1])
 );
 
 describe('RequestEventsDetailsCard Speed Mode column', () => {

@@ -138,10 +138,7 @@ func TestReleasePublishersWaitForOneFullCI(t *testing.T) {
 }
 
 func TestCIGateRejectsIncompleteReleaseChecks(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is required to exercise the GitHub Actions gate")
-	}
+	bash := releaseBash(t)
 	workflow := readReleaseWorkflow(t, "ci.yml")
 	gate := workflow.Jobs["ci-gate"]
 	if len(gate.Steps) != 1 || gate.Steps[0].Run == "" {

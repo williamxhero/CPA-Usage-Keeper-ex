@@ -3,13 +3,14 @@ import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import i18n from '@/i18n'
+import { requestEventsLiveSnapshot } from './requestEventsLiveFixture'
 import { useUsageStatsStore } from '@/stores'
 import { KEY_VIEWER_TIME_RANGE_STORAGE_KEY } from '@/features/key-viewer/timeRange'
 
 const api = vi.hoisted(() => ({
   fetchUsageOverview: vi.fn(), fetchKeyOverview: vi.fn(), fetchUsageOverviewComparisons: vi.fn(),
   fetchUsageActivity: vi.fn(), fetchKeyActivity: vi.fn(), fetchUsageEvents: vi.fn(),
-  fetchUsageOverviewRealtime: vi.fn(), fetchAnalysis: vi.fn(), fetchAnalysisLatency: vi.fn(),
+  openUsageEventsLive: vi.fn(), fetchUsageOverviewRealtime: vi.fn(), fetchAnalysis: vi.fn(), fetchAnalysisLatency: vi.fn(),
 }))
 vi.mock('@/lib/api', async (original) => ({
   ...await original<typeof import('@/lib/api')>(), ...api,
@@ -47,6 +48,7 @@ for (const viewer of ['admin', 'key'] as const) describe(`${viewer} overview pri
     overviewAPI.mockResolvedValue(overview('a'))
     api.fetchUsageOverviewComparisons.mockResolvedValue(comparisons('a'))
     api.fetchUsageEvents.mockResolvedValue({ events: [], total_count: 0, has_more: false })
+    api.openUsageEventsLive.mockImplementation(async (range, options, signal) => requestEventsLiveSnapshot(await api.fetchUsageEvents(range, signal, options), signal))
     api.fetchUsageOverviewRealtime.mockResolvedValue({ window: '15m' })
     api.fetchAnalysis.mockResolvedValue({})
     api.fetchAnalysisLatency.mockResolvedValue({})

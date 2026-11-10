@@ -6,8 +6,10 @@ import { UsageComparisonCharts } from '@/components/usage/UsageComparisonCharts'
 import type { ModelSpeedRefreshSignal } from '@/components/usage/model-speed/modelSpeedAnimation';
 import { useState, useMemo, useCallback, useEffect, useRef, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageEvents, fetchUsageIdentity, fetchVersion, isCostsBusy, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat, type CpaApiKeyOptionsRequest } from '@/lib/api';
+import { ApiError, appPath, createUsageEventRequestLogDownloadURL, exportUsageEvents, fetchAnalysis, fetchAnalysisLatency, fetchAuthSessions, fetchCpaApiKeyOptions, fetchCpaApiKeySettings, fetchStatus, fetchUpdateCheck, fetchUsageEvents, fetchUsageEventModelFilterOptions, fetchUsageEventRequestLog, fetchUsageEventSourceFilterOptions, fetchUsageIdentity, fetchVersion, isCostsBusy, isUsageRangeBoundsConflict, logout, revokeAuthSession, updateAuthSessionAlias, updateCpaApiKeyAlias, type UsageEventsExportFormat, type CpaApiKeyOptionsRequest } from '@/lib/api';
 import { useScopedAPIKeyOptions } from '@/components/usage/hooks/useScopedAPIKeyOptions';
+import { useRequestEventsFeed } from '@/components/usage/useRequestEventsFeed';
+import { useModelPricingData } from '@/components/usage/hooks/useModelPricingData';
 import type { AnalysisLatencyDiagnostics, AnalysisResponse, AuthManagedSessionItem, CpaApiKeyOption, CpaApiKeySettingsItem, OverviewRealtimeWindow, StatusResponse, UsageCustomRange, UsageEvent, UsageEventRequestLogResponse, UsageSourceFilterOption, UsageTimeRange, VersionResponse } from '@/lib/types';
 import { getUsageTabPath, handleUsageTabKeyActivation, resolveInitialUsageTab, shouldHandleUsageNavigation, USAGE_TAB_OPTIONS, type UsageTab } from '@/lib/usageNavigation';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
@@ -21,6 +23,7 @@ import { updateCredentialDetailStats } from '@/components/usage/credentials/cred
 import { CREDENTIAL_PAGES_REFRESH_INTERVAL_MS } from '@/components/usage/credentials/useCredentialPages';
 import { PricingSettings, type PricingSettingsHandle } from '@/components/usage/pricing/PricingSettings';
 import { ModelCatalog, type ModelCatalogHandle } from '@/components/usage/models/ModelCatalog';
+import { useModelCatalogData } from '@/components/usage/models/useModelCatalogData';
 import { buildCredentialProviderSearch } from '@/components/usage/credentials/credentialProviderFilters';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
@@ -234,59 +237,9 @@ type TopNoticeKind = 'success' | 'info' | 'error';
 
 export const getUpdateCheckToastDuration = (kind: TopNoticeKind) => (kind === 'error' ? 6_000 : 4_000);
 
-export const shouldAutoRefreshUsageTab = ({
-  activeTab,
-  eventsPage,
-}: {
-  activeTab: UsageTab;
-  eventsPage: number;
-}) => {
-  if (activeTab === 'overview' || activeTab === 'realtime') return true;
-  if (activeTab === 'events') return eventsPage === 1;
-  return false;
-};
-
-export const appendUniqueUsageEvents = (
-  currentEvents: readonly UsageEvent[],
-  incomingEvents: readonly UsageEvent[],
-): UsageEvent[] => {
-  const seenEventIds = new Set(
-    currentEvents
-      .map((event) => String(event.id ?? '').trim())
-      .filter(Boolean),
-  );
-  const merged = [...currentEvents];
-  for (const event of incomingEvents) {
-    const eventId = String(event.id ?? '').trim();
-    if (eventId && seenEventIds.has(eventId)) continue;
-    if (eventId) seenEventIds.add(eventId);
-    merged.push(event);
-  }
-  return merged;
-};
-type UsageEventLoadMoreErrorOptions = {
-  error: unknown;
-  pauseAutoLoadMore: () => void;
-  recoverRangeBoundsConflict: (error: unknown) => boolean;
-  onAuthRequired?: () => void;
-  setError: (message: string) => void;
-};
-
-export const handleUsageEventLoadMoreError = ({
-  error,
-  pauseAutoLoadMore,
-  recoverRangeBoundsConflict,
-  onAuthRequired,
-  setError,
-}: UsageEventLoadMoreErrorOptions) => {
-  pauseAutoLoadMore();
-  if (recoverRangeBoundsConflict(error)) return;
-  if (error instanceof ApiError && error.status === 401) {
-    onAuthRequired?.();
-    return;
-  }
-  setError(error instanceof Error ? error.message : 'Failed to load more usage events');
-};
+export const shouldAutoRefreshUsageTab = ({ activeTab }: { activeTab: UsageTab }) => (
+  activeTab === 'overview' || activeTab === 'realtime'
+);
 
 type RequestEventFilterState = {
   model: string;
@@ -748,6 +701,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const setTheme = useThemeStore((state) => state.setTheme);
   const isDark = resolvedTheme === 'dark';
   const [activeTab, setActiveTab] = useState<UsageTab>(loadUsageTab);
+  const modelCatalog = useModelCatalogData({ enabled: activeTab === 'models', onAuthRequired });
+  const modelPricing = useModelPricingData({ enabled: activeTab === 'models' || activeTab === 'settings', onAuthRequired });
   const pricingSettingsRef = useRef<PricingSettingsHandle | null>(null);
   const modelCatalogRef = useRef<ModelCatalogHandle | null>(null);
   const [loadedTimeRange] = useState(loadTimeRange);
@@ -906,26 +861,26 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const topNoticeTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const [initialRequestEventsPreferences] = useState(loadRequestEventsPreferences);
-  const [eventsLoading, setEventsLoading] = useState(false);
-  const [eventsError, setEventsError] = useState('');
-  const [eventsSnapshotMismatch, setEventsSnapshotMismatch] = useState(false);
-  const eventsSnapshotRef = useRef<PricingSnapshotState>({ mixed: false });
-  const [eventsData, setEventsData] = useState<UsageEvent[]>([]);
-  const eventsLoadedScopeRef = useRef<string | null>(null);
-  const [eventsPage, setEventsPage] = useState(1);
-  const [eventsTotalCount, setEventsTotalCount] = useState(0);
-  const [eventsNextCursor, setEventsNextCursor] = useState<string | null>(null);
-  const [eventsLoadingMore, setEventsLoadingMore] = useState(false);
-  const [eventsAutoLoadMore, setEventsAutoLoadMore] = useState(true);
   const [eventsModelOptions, setEventsModelOptions] = useState<string[]>([]);
   const [eventsSourceOptions, setEventsSourceOptions] = useState<UsageSourceFilterOption[]>([]);
   const [eventsModelFilter, setEventsModelFilter] = useState(initialRequestEventsPreferences.filters.model);
   const [eventsSourceFilter, setEventsSourceFilter] = useState(initialRequestEventsPreferences.filters.source);
   const [eventsResultFilter, setEventsResultFilter] = useState(initialRequestEventsPreferences.filters.result);
-  const currentEventsScope = JSON.stringify([usageRangeQuery, requestApiKeyId, eventsModelFilter, eventsSourceFilter, eventsResultFilter]);
-  const eventsScopeMatches = eventsLoadedScopeRef.current === currentEventsScope;
-  const visibleEvents = eventsScopeMatches ? eventsData : [];
-  const eventsHasMore = eventsScopeMatches && Boolean(eventsNextCursor);
+  const eventsQueryOptions = {
+      pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
+      cursorMode: true,
+      model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
+      source: eventsSourceFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsSourceFilter,
+      result: eventsResultFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsResultFilter,
+      apiKeyId: requestApiKeyId,
+    };
+  const eventsFeed = useRequestEventsFeed({
+    enabled: activeTab === 'events' && usageRangeQuery.valid && apiKeyFilterReady,
+    request: usageRangeQuery,
+    options: eventsQueryOptions,
+    onAuthRequired,
+    onRangeBoundsConflict: recoverRangeBoundsConflict,
+  });
   const [eventsVisibleColumnIds, setEventsVisibleColumnIds] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.visibleColumnIds);
   const [eventsColumnOrder, setEventsColumnOrder] = useState<RequestEventColumnId[]>(initialRequestEventsPreferences.columnOrder);
   const [eventsExportingFormat, setEventsExportingFormat] = useState<UsageEventsExportFormat | null>(null);
@@ -946,10 +901,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   const [requestLogError, setRequestLogError] = useState('');
   const [requestLogLoadingEventId, setRequestLogLoadingEventId] = useState<string | null>(null);
   const [requestLogDownloading, setRequestLogDownloading] = useState(false);
-  const eventsLoadMoreRequestControllerRef = useRef<AbortController | null>(null);
   const requestLogAccessEnabled = status?.cpa_request_log_access_enabled === true;
   const requestLogDownloadGenerationRef = useRef(0);
-  const eventsRequestControllerRef = useRef<AbortController | null>(null);
   const eventsFilterOptionsRequestControllerRef = useRef<AbortController | null>(null);
   const requestLogControllerRef = useRef<AbortController | null>(null);
   const [manualRefreshLoading, setManualRefreshLoading] = useState(false);
@@ -1464,160 +1417,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     }
   }, [onAuthRequired]);
 
-  const loadEvents = useCallback(async (snapshotRecovery = false) => {
-    if (!usageRangeQuery.valid || !apiKeyFilterReady) return;
-    const scope = JSON.stringify([usageRangeQuery, requestApiKeyId, eventsModelFilter, eventsSourceFilter, eventsResultFilter]);
-    const sameScope = eventsLoadedScopeRef.current === scope;
-    eventsRequestControllerRef.current?.abort();
-    eventsLoadMoreRequestControllerRef.current?.abort();
-    eventsLoadMoreRequestControllerRef.current = null;
-    const controller = new AbortController();
-    eventsRequestControllerRef.current = controller;
-
-    setEventsLoading(true);
-    setEventsLoadingMore(false);
-    setEventsError('');
-    setEventsSnapshotMismatch(snapshotRecovery);
-    // A recovery is bounded to one first-page fetch; scrolling must not retry it forever.
-    setEventsAutoLoadMore(!snapshotRecovery);
-    setEventsNextCursor(null);
-    if (!sameScope) {
-      setEventsData([]);
-      setEventsTotalCount(0);
-    }
-    try {
-      const response = await fetchUsageEvents(usageRangeQuery, controller.signal, {
-        pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
-        cursorMode: true,
-        model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
-        source: eventsSourceFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsSourceFilter,
-        result: eventsResultFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsResultFilter,
-        apiKeyId: requestApiKeyId,
-      });
-      if (eventsRequestControllerRef.current !== controller) {
-        return;
-      }
-      const snapshot = getEventsPricingSnapshot(response);
-      eventsSnapshotRef.current = snapshot;
-      if (snapshot.mixed) {
-        setEventsSnapshotMismatch(true);
-        setEventsAutoLoadMore(false);
-        setEventsData([]);
-        setEventsTotalCount(0);
-        setEventsNextCursor(null);
-        setEventsPage(1);
-        return;
-      }
-      eventsLoadedScopeRef.current = scope;
-      setEventsData(response.events);
-      setEventsTotalCount(Math.max(response.total_count, 0));
-      setEventsNextCursor(response.has_more === true ? response.next_cursor?.trim() || null : null);
-      setEventsPage(1);
-    } catch (error) {
-      if (controller.signal.aborted) {
-        return;
-      }
-      if (isCostsBusy(error)) setEventsAutoLoadMore(false);
-      if (eventsRequestControllerRef.current === controller) {
-        if (!isCostsBusy(error) || !sameScope) {
-          setEventsData([]);
-          setEventsTotalCount(0);
-          setEventsNextCursor(null);
-        }
-      }
-      if (recoverRangeBoundsConflict(error)) return;
-      if (error instanceof ApiError && error.status === 401) {
-        onAuthRequired?.();
-        return;
-      }
-      setEventsError(isCostsBusy(error) ? 'COSTS_BUSY' : t('cost_estimates.load_failed'));
-    } finally {
-      if (eventsRequestControllerRef.current === controller) {
-        setEventsLoading(false);
-        eventsRequestControllerRef.current = null;
-      }
-    }
-  }, [apiKeyFilterReady, eventsModelFilter, eventsResultFilter, eventsSourceFilter, onAuthRequired, recoverRangeBoundsConflict, requestApiKeyId, t, usageRangeQuery]);
-
-  const loadMoreEvents = useCallback(async () => {
-    const cursor = eventsNextCursor?.trim();
-    if (!cursor || !eventsHasMore || eventsLoading || eventsRequestControllerRef.current || eventsLoadMoreRequestControllerRef.current) return;
-    if (!usageRangeQuery.valid || !apiKeyFilterReady) return;
-
-    const controller = new AbortController();
-    eventsLoadMoreRequestControllerRef.current = controller;
-    setEventsLoadingMore(true);
-    setEventsError('');
-    try {
-      const response = await fetchUsageEvents(usageRangeQuery, controller.signal, {
-        pageSize: REQUEST_EVENTS_DEFAULT_PAGE_SIZE,
-        cursorMode: true,
-        cursor,
-        model: eventsModelFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsModelFilter,
-        source: eventsSourceFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsSourceFilter,
-        result: eventsResultFilter === ALL_REQUEST_EVENTS_FILTER ? undefined : eventsResultFilter,
-        apiKeyId: requestApiKeyId,
-      });
-      if (eventsLoadMoreRequestControllerRef.current !== controller) return;
-      const snapshot = getEventsPricingSnapshot(response);
-      if (!eventSnapshotsCompatible(eventsSnapshotRef.current, snapshot)) {
-        setEventsNextCursor(null);
-        await loadEvents(true);
-        return;
-      }
-      eventsSnapshotRef.current = { id: eventsSnapshotRef.current.id ?? snapshot.id, mixed: false };
-      setEventsAutoLoadMore(!eventsSnapshotMismatch);
-      setEventsData((currentEvents) => appendUniqueUsageEvents(currentEvents, response.events));
-      if (response.total_count >= 0) {
-        setEventsTotalCount(response.total_count);
-      }
-      setEventsNextCursor(response.has_more === true ? response.next_cursor?.trim() || null : null);
-      setEventsPage((currentPage) => currentPage + 1);
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      handleUsageEventLoadMoreError({
-        error,
-        pauseAutoLoadMore: () => setEventsAutoLoadMore(false),
-        recoverRangeBoundsConflict,
-        onAuthRequired,
-        setError: () => setEventsError(t('cost_estimates.load_failed')),
-      });
-    } finally {
-      if (eventsLoadMoreRequestControllerRef.current === controller) {
-        eventsLoadMoreRequestControllerRef.current = null;
-        setEventsLoadingMore(false);
-      }
-    }
-  }, [apiKeyFilterReady, eventsHasMore, eventsLoading, eventsModelFilter, eventsNextCursor, eventsResultFilter, eventsSnapshotMismatch, eventsSourceFilter, loadEvents, onAuthRequired, recoverRangeBoundsConflict, requestApiKeyId, t, usageRangeQuery]);
-
-  const resetEventsPage = useCallback(() => {
-    eventsLoadMoreRequestControllerRef.current?.abort();
-    eventsLoadMoreRequestControllerRef.current = null;
-    setEventsNextCursor(null);
-    setEventsLoadingMore(false);
-    setEventsAutoLoadMore(true);
-    setEventsPage(1);
-  }, []);
-
-  useEffect(() => {
-    // 顶部 Key 和时间范围共同限定列表；切换时立即丢弃旧游标，查询 effect 负责取消旧请求。
-    resetEventsPage();
-  }, [resetEventsPage, selectedApiKeyId, usageRangeQuery]);
-
-  const handleEventsModelFilterChange = useCallback((model: string) => {
-    setEventsModelFilter(model);
-    resetEventsPage();
-  }, [resetEventsPage]);
-
-  const handleEventsSourceFilterChange = useCallback((source: string) => {
-    setEventsSourceFilter(source);
-    resetEventsPage();
-  }, [resetEventsPage]);
-
-  const handleEventsResultFilterChange = useCallback((result: string) => {
-    setEventsResultFilter(result);
-    resetEventsPage();
-  }, [resetEventsPage]);
+  const loadEvents = eventsFeed.refresh;
+  const loadMoreEvents = eventsFeed.loadMore;
+  const handleEventsModelFilterChange = setEventsModelFilter;
+  const handleEventsSourceFilterChange = setEventsSourceFilter;
+  const handleEventsResultFilterChange = setEventsResultFilter;
 
   const handleEventsExport = useCallback(async (format: UsageEventsExportFormat) => {
     if (!usageRangeQuery.valid || !apiKeyFilterReady) return;
@@ -1788,7 +1592,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setManualRefreshLoading(true);
     try {
       // Every cost query owns its cancellation/identity guards; retain all query inputs.
-      await Promise.all([loadUsage(), loadComparisons(), loadEvents(), loadRealtime(), loadAnalysis()]);
+      await Promise.all([loadUsage(), loadComparisons(), activeTab === 'events' ? loadEvents() : fetchUsageEvents(usageRangeQuery, new AbortController().signal, eventsQueryOptions), loadRealtime(), loadAnalysis()]);
     } catch (error) {
       if (recoverRangeBoundsConflict(error)) return;
       if (error instanceof ApiError && error.status === 401) {
@@ -1799,7 +1603,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     } finally {
       setManualRefreshLoading(false);
     }
-  }, [apiKeyFilterReady, loadAnalysis, loadComparisons, loadEvents, loadRealtime, loadUsage, onAuthRequired, recoverRangeBoundsConflict, t]);
+  }, [activeTab, apiKeyFilterReady, eventsQueryOptions, usageRangeQuery, loadAnalysis, loadComparisons, loadEvents, loadRealtime, loadUsage, onAuthRequired, recoverRangeBoundsConflict, t]);
 
   useEffect(() => {
     refreshAllPricingCostsRef.current = refreshAllPricingCosts;
@@ -1850,16 +1654,12 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
       await loadRealtime();
       return;
     }
-    if (activeTab === 'events') {
-      await loadEvents();
-      return;
-    }
     if (credentialSectionVisibility.enabled) {
       await refreshCredentials();
       return;
     }
     await Promise.all([loadUsage(), loadActivity({ skipIfInFlight: true }), loadComparisons({ skipIfInFlight: true })]);
-  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadComparisons, loadEvents, loadRealtime, loadUsage, refreshCredentials, invalidateScopedApiKeys]);
+  }, [activeTab, apiKeyFilterReady, credentialSectionVisibility.enabled, loadActivity, loadComparisons, loadRealtime, loadUsage, refreshCredentials, invalidateScopedApiKeys]);
 
   const handleAutoRefreshError = useCallback((error: unknown) => {
     if (recoverRangeBoundsConflict(error)) return;
@@ -1870,10 +1670,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     setStatusError(activeTab === 'overview' || activeTab === 'events' || activeTab === 'realtime' || activeTab === 'analysis' ? t('cost_estimates.load_failed') : error instanceof Error ? error.message : 'REFRESH_FAILED');
   }, [activeTab, onAuthRequired, recoverRangeBoundsConflict, t]);
 
-  const autoRefreshEnabled = shouldAutoRefreshUsageTab({
-    activeTab,
-    eventsPage,
-  });
+  const autoRefreshEnabled = shouldAutoRefreshUsageTab({ activeTab });
 
   const handleManualRefresh = useCallback(async () => {
     setManualRefreshLoading(true);
@@ -1967,25 +1764,6 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   }, [activeTab, loadEventFilterOptions]);
 
   useEffect(() => {
-    if (activeTab !== 'events') {
-      eventsRequestControllerRef.current?.abort();
-      eventsRequestControllerRef.current = null;
-      eventsLoadMoreRequestControllerRef.current?.abort();
-      eventsLoadMoreRequestControllerRef.current = null;
-      setEventsLoading(false);
-      setEventsLoadingMore(false);
-      return;
-    }
-    void loadEvents();
-    return () => {
-      eventsRequestControllerRef.current?.abort();
-      eventsRequestControllerRef.current = null;
-      eventsLoadMoreRequestControllerRef.current?.abort();
-      eventsLoadMoreRequestControllerRef.current = null;
-    };
-  }, [activeTab, loadEvents]);
-
-  useEffect(() => {
     if (activeTab !== 'analysis') {
       analysisRequestControllerRef.current?.abort();
       analysisRequestControllerRef.current = null;
@@ -2043,10 +1821,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
     if (next.result !== eventsResultFilter) {
       setEventsResultFilter(next.result);
     }
-    if (next.model !== eventsModelFilter || next.source !== eventsSourceFilter || next.result !== eventsResultFilter) {
-      resetEventsPage();
-    }
-  }, [eventsFilterOptionsLoaded, eventsModelFilter, eventsModelOptions, eventsResultFilter, eventsSourceFilter, eventsSourceOptions, resetEventsPage]);
+  }, [eventsFilterOptionsLoaded, eventsModelFilter, eventsModelOptions, eventsResultFilter, eventsSourceFilter, eventsSourceOptions]);
 
   const displayStatusError = statusError === 'REFRESH_FAILED' ? t('notification.refresh_failed') : statusError;
   const displayRealtimeError = realtimeError
@@ -2073,11 +1848,11 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
   // Some tabs clamp a saved custom range; do not pin them to an old, wider Overview query.
   const overviewMatchesActiveQuery = timeRange !== 'custom' || (customRange?.unit === activeCustomRange?.unit
     && customRange?.start === activeCustomRange?.start && customRange?.end === activeCustomRange?.end);
-  const eventsRelatedSnapshotMismatch = activeTab === 'events' && !eventsLoading && !loading && !comparisonsLoading
+  const eventsRelatedSnapshotMismatch = activeTab === 'events' && !eventsFeed.loading && !loading && !comparisonsLoading
     && ((overviewMatchesActiveQuery && Boolean(currentOverviewUsage)
-      && !eventSnapshotsCompatible(eventsSnapshotRef.current, overviewSnapshot))
+      && !eventSnapshotsCompatible(eventsFeed.pricingSnapshot, overviewSnapshot))
       || (Boolean(currentOverviewComparisons)
-        && !pricingSnapshotsCompatible(eventsSnapshotRef.current.id, getPricingSnapshotId(currentOverviewComparisons))));
+        && !pricingSnapshotsCompatible(eventsFeed.pricingSnapshot.id, getPricingSnapshotId(currentOverviewComparisons))));
   const analysisSnapshot = getAnalysisPricingSnapshot(currentAnalysisData);
   const analysisSnapshotMismatch = activeTab === 'analysis' && !analysisLoading && Boolean(currentAnalysisData)
     && (analysisSnapshot.mixed || (!loading && !comparisonsLoading
@@ -2313,10 +2088,10 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
             {activeTab === 'settings' && apiKeySettingsError && <div className={styles.errorBox}>{apiKeySettingsError}</div>}
             {!(activeTab === 'overview' ? error : activeTab === 'settings' ? (authSessionsError || apiKeySettingsError) : '') && displayStatusError && <div className={styles.errorBox}>{displayStatusError}</div>}
 
-            {(overviewSnapshotMismatch || analysisSnapshotMismatch || eventsRelatedSnapshotMismatch || (activeTab === 'events' && eventsSnapshotMismatch)) && (
+            {(overviewSnapshotMismatch || analysisSnapshotMismatch || eventsRelatedSnapshotMismatch || (activeTab === 'events' && eventsFeed.snapshotMismatch)) && (
               <div className={styles.errorBox} role="status" data-pricing-snapshot-notice>
                 {t('cost_estimates.snapshot_mismatch')}
-                <Button type="button" variant="secondary" size="sm" disabled={manualRefreshLoading || (activeTab === 'overview' ? loading || comparisonsLoading : activeTab === 'analysis' ? analysisLoading : eventsLoading)} onClick={() => void refreshAllPricingCosts()}>
+                <Button type="button" variant="secondary" size="sm" disabled={manualRefreshLoading || (activeTab === 'overview' ? loading || comparisonsLoading : activeTab === 'analysis' ? analysisLoading : eventsFeed.loading)} onClick={() => void refreshAllPricingCosts()}>
                   {t('cost_estimates.refresh')}
                 </Button>
               </div>
@@ -2394,20 +2169,25 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
             {activeTab === 'events' && (
               <>
-                {eventsError && <div className={styles.errorBox}>{eventsError === 'COSTS_BUSY' ? t('usage_stats.costs_busy') : eventsError}</div>}
+                {eventsFeed.error && <div className={styles.errorBox}>{eventsFeed.error === 'COSTS_BUSY' ? t('usage_stats.costs_busy') : t('cost_estimates.load_failed')}</div>}
                 <RequestEventsDetailsCard
-                  events={visibleEvents}
-                  loading={eventsLoading || (eventsError === 'COSTS_BUSY' && visibleEvents.length === 0)}
-                  totalCount={eventsScopeMatches ? eventsTotalCount : 0}
+                  events={eventsFeed.events}
+                  loading={eventsFeed.loading}
+                  totalCount={eventsFeed.totalCount}
+                  reading={eventsFeed.reading}
+                  restoring={eventsFeed.restoring}
+                  onTablePositionChange={eventsFeed.setAtTop}
+                  onStartReading={eventsFeed.startReading}
+                  onReturnToTop={eventsFeed.returnToTop}
                   modelOptions={eventsModelOptions}
                   sourceOptions={eventsSourceOptions}
                   modelFilter={eventsModelFilter}
                   sourceFilter={eventsSourceFilter}
                   resultFilter={eventsResultFilter}
                   exportingFormat={eventsExportingFormat}
-                  hasMore={eventsHasMore}
-                  loadingMore={eventsLoadingMore}
-                  autoLoadMore={eventsAutoLoadMore}
+                  hasMore={Boolean(eventsFeed.historyCursor)}
+                  loadingMore={eventsFeed.loadingMore}
+                  autoLoadMore={eventsFeed.autoLoadMore}
                   visibleColumnIds={eventsVisibleColumnIds}
                   columnOrder={eventsColumnOrder}
                   onModelFilterChange={handleEventsModelFilterChange}
@@ -2502,8 +2282,8 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
 
             {activeTab === 'models' && (
               <div className={styles.settingsSections}>
-                <ModelCatalog ref={modelCatalogRef} onAuthRequired={onAuthRequired} />
-                <PricingSettings ref={pricingSettingsRef} timezone={status?.timezone} onAuthRequired={onAuthRequired}
+                <ModelCatalog ref={modelCatalogRef} catalog={modelCatalog} />
+                <PricingSettings ref={pricingSettingsRef} pricing={modelPricing} timezone={status?.timezone} onAuthRequired={onAuthRequired}
                   onRecalculationSettled={() => { void credentialsData.refreshAfterRecalculation() }} />
               </div>
             )}
@@ -2542,7 +2322,7 @@ export function UsagePage({ onAuthRequired }: { onAuthRequired?: () => void }) {
                 <section aria-label="Stored valuation / 已存估值">
                   <h2>Stored valuation / 已存估值</h2>
                   <p>Historical stored estimates are separate from the current matrix and official prices; they are not invoices.</p>
-                  <PricingSettings ref={pricingSettingsRef} timezone={status?.timezone} onAuthRequired={onAuthRequired}
+                  <PricingSettings ref={pricingSettingsRef} pricing={modelPricing} timezone={status?.timezone} onAuthRequired={onAuthRequired}
                     onRecalculationSettled={() => { void credentialsData.refreshAfterRecalculation() }} />
                 </section>
               </div>

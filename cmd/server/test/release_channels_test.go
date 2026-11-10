@@ -50,10 +50,7 @@ func channelScript(t *testing.T, workflow, job, stepName string) string {
 }
 
 func TestReleaseChannelPolicy(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is required for the release runner")
-	}
+	bash := releaseBash(t)
 	script := channelScript(t, "release-policy.yml", "validate", "Validate release tag and source branch")
 	root := t.TempDir()
 	origin := filepath.Join(root, "origin.git")
@@ -197,10 +194,7 @@ func TestReleasePublishersUseValidatedChannels(t *testing.T) {
 }
 
 func TestHomebrewReleaseUpdatePreservesFormulaSettings(t *testing.T) {
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash is required for the release runner")
-	}
+	bash := releaseBash(t)
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 is required for the Linux tap updater")
 	}
@@ -283,7 +277,7 @@ func TestReleaseVersionFileRemainsV2Only(t *testing.T) {
 				t.Fatal(err)
 			}
 			outputPath := filepath.Join(root, "outputs")
-			cmd := exec.Command("bash", "-e", "-c", script)
+			cmd := exec.Command(releaseBash(t), "-e", "-c", script)
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(), "RELEASE_TAG="+tag, "GITHUB_OUTPUT="+filepath.ToSlash(outputPath))
 			if output, err := cmd.CombinedOutput(); err != nil {

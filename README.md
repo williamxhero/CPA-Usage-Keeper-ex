@@ -2,6 +2,27 @@
 
 # CPA Usage Keeper-EX 主要能力
 
+## 开始使用
+
+Keeper 采集 CPA 用量，提供请求历史、实时视图、定价和成本分析。Go 服务位于 `cmd/server`，React 前端位于 `web`。
+
+- 配置和接入步骤：[README-source.md](README-source.md)。
+- 请求事件通过实时流取得首屏及新增记录，通过游标读取历史。
+- 定价快照不一致时停止拼接不同基线的结果，并提供显式刷新入口。
+
+```powershell
+go test ./...
+npm ci --prefix web
+npm run typecheck --prefix web
+npm run test --prefix web
+npm run build --prefix web
+go build -o cpa-usage-keeper.exe ./cmd/server
+```
+
+本项目的运行实例位于父项目的本机 Windows 栈。部署前保留数据与上一版本，并使用具备健康检查及失败回退的部署脚本。
+
+## Fork 功能记录
+
 本页只列相对上游 Usage Keeper 的主要功能。上游能保存 CPA 用量并展示基础统计，但当一个部署同时服务多个凭证、渠道和价格规则时，成本归属会失真；本 fork 把价格、身份和证据链补齐。
 
 - **分层定价体系**：上游价格主要按模型或 Provider 解释，难以表达不同凭证的默认倍率、模型例外和固定资费。本 fork 支持凭证默认价、指定模型倍率、固定资费，并把规则写入请求和窗口的价格快照。对应 [issue #1](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/1)、[#3](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/3)、[#5](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/5)、[#6](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/6)、[#14](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/14)、[#17](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/17) 和 [#33](https://github.com/williamxhero/CPA-Usage-Keeper-ex/issues/33)。

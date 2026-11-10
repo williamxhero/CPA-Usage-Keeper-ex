@@ -135,6 +135,7 @@ type CheckResponse struct {
 	Subscription                        *SubscriptionInfo       `json:"subscription,omitempty"`
 	RateLimitResetCreditsAvailableCount *int                    `json:"rateLimitResetCreditsAvailableCount,omitempty"`
 	ClaudeResetGrants                   *ClaudeResetGrantStatus `json:"claudeResetGrants,omitempty"`
+	antigravityHasSeparateArgon         bool
 }
 
 // NewService constructs the current-price service; options must supply a catalog.
@@ -381,9 +382,10 @@ func (s *Service) check(ctx context.Context, request CheckRequest, beforeSubscri
 		}
 	}
 	response := CheckResponse{
-		ID:           authIndex,
-		Quota:        NormalizeQuotaRows(providerOutput),
-		Subscription: NormalizeSubscription(providerOutput),
+		ID:                          authIndex,
+		Quota:                       NormalizeQuotaRows(providerOutput),
+		Subscription:                NormalizeSubscription(providerOutput),
+		antigravityHasSeparateArgon: antigravitySeparateArgonObserved(providerOutput),
 	}
 	if result, ok := providerOutput.Result.(ClaudeResult); ok && result.Usage != nil {
 		response.ClaudeResetGrants = result.Usage.ResetGrants
