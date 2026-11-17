@@ -110,6 +110,7 @@ export function useRequestEventsFeed({ enabled, request, options, onAuthRequired
   const liveRef = useRef<AbortController | null>(null);
   const historyRef = useRef<AbortController | null>(null);
   const attemptsRef = useRef(0);
+  const capacityFailuresRef = useRef(0);
   const refreshRef = useRef<{ token: object; resolve: () => void } | null>(null);
   const settleRefresh = useCallback((token?: object) => {
     if (refreshRef.current && (!token || refreshRef.current.token === token)) {
@@ -121,6 +122,7 @@ export function useRequestEventsFeed({ enabled, request, options, onAuthRequired
 
   useEffect(() => {
     attemptsRef.current = 0;
+    capacityFailuresRef.current = 0;
     setState((current) => enabled && current.scope === scope ? current : emptyState(scope));
     return () => { abortHistory(); settleRefresh(); };
   }, [enabled, scope, abortHistory, settleRefresh]);
@@ -192,6 +194,7 @@ export function useRequestEventsFeed({ enabled, request, options, onAuthRequired
         const totalCount = payload.total_count;
         const pricingSnapshot = getEventsPricingSnapshot({ events, pricing_snapshot_id: typeof payload.pricing_snapshot_id === 'string' ? payload.pricing_snapshot_id : undefined });
         receivedSnapshot = true;
+        capacityFailuresRef.current = 0;
         attemptsRef.current = 0;
         update((current) => ({
           ...current, pricingSnapshot, snapshotMismatch: current.snapshotMismatch || pricingSnapshot.mixed,
@@ -244,6 +247,10 @@ export function useRequestEventsFeed({ enabled, request, options, onAuthRequired
         if (!disposed && !controller.signal.aborted) throw new Error('Live stream disconnected');
       } catch (error) {
         if (disposed || (controller.signal.aborted && !timedOut)) return;
+        // 仅延后容量错误的展示：首次失败加三次重试后才提示，不改变重试调度。
+        const capacity = error instanceof ApiError && error.status === 429;
+        capacityFailuresRef.current = capacity ? capacityFailuresRef.current + 1 : 0;
+        const hideCapacityError = capacity && capacityFailuresRef.current <= 3;
         const conflict = callbacksRef.current.onRangeBoundsConflict?.(error);
         const unauthorized = error instanceof ApiError && [401, 403].includes(error.status);
         if (!conflict && unauthorized) callbacksRef.current.onAuthRequired?.();
@@ -252,7 +259,7 @@ export function useRequestEventsFeed({ enabled, request, options, onAuthRequired
         update((current) => ({
           ...current, loading: !terminal && current.mode === 'restoring',
           mode: terminal && current.mode === 'restoring' ? 'reading' : current.mode,
-          error: handled ? current.error : isCostsBusy(error) ? 'COSTS_BUSY'
+          error: hideCapacityError ? '' : handled ? current.error : isCostsBusy(error) ? 'COSTS_BUSY'
             : terminal || !receivedSnapshot ? error instanceof Error ? error.message : 'Failed to load usage events' : '',
         }));
         settleRefresh(token);
@@ -297,6 +304,7 @@ export function useRequestEventsFeed({ enabled, request, options, onAuthRequired
     if (!enabled) { resolve(); return; }
     settleRefresh();
     abortHistory();
+    capacityFailuresRef.current = 0;
     const token = {};
     refreshRef.current = { token, resolve };
     setState((current) => ({

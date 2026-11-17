@@ -2,7 +2,6 @@
 
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
   REQUEST_EVENT_COLUMN_IDS,
@@ -46,7 +45,14 @@ const renderCardElement = (events: UsageEvent[]) => (
   />
 );
 
-const renderCard = (events: UsageEvent[]) => renderToStaticMarkup(renderCardElement(events));
+const renderCard = async (events: UsageEvent[]) => {
+  const mounted = await mountCard(events);
+  try {
+    return mounted.container.innerHTML;
+  } finally {
+    await mounted.unmount();
+  }
+};
 
 const mountCard = async (events: UsageEvent[]) => {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -96,7 +102,7 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
           }));
         });
 
-        const tooltip = document.body.querySelector('[role="tooltip"]')!;
+        const tooltip = document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])')!;
         expect(Array.from(tooltip.querySelectorAll('span'), (line) => line.textContent)).toEqual([
           effectiveLine,
           requestLine,
@@ -106,7 +112,7 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
         await act(async () => {
           cell.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
         });
-        expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+        expect(document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])')).toBeNull();
       }
     } finally {
       await mounted.unmount();
@@ -114,8 +120,8 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
     }
   });
 
-  it('shows mapped request and response modes in one column', () => {
-    const html = renderCard([
+  it('shows mapped request and response modes in one column', async () => {
+    const html = await renderCard([
       { ...baseEvent, service_tier: 'auto', response_service_tier: 'default' },
       { ...baseEvent, id: '102', service_tier: 'standard', response_service_tier: 'standard' },
     ]);
@@ -138,24 +144,24 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
       await act(async () => cell.focus());
       expect(cell.getAttribute('aria-label')).toBe('Effective Speed Mode: -; Speed Mode: Auto (auto); Response Speed Mode: Standard (default)');
       expect(cell.getAttribute('aria-describedby')).toBeNull();
-      expect(document.body.querySelector('[role="tooltip"]')).not.toBeNull();
+      expect(document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])')).not.toBeNull();
 
       await act(async () => {
         cell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
         cell.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
       });
-      expect(document.body.querySelector('[role="tooltip"]')).not.toBeNull();
+      expect(document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])')).not.toBeNull();
 
       await act(async () => {
         cell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
         cell.blur();
       });
-      expect(document.body.querySelector('[role="tooltip"]')).not.toBeNull();
+      expect(document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])')).not.toBeNull();
 
       await act(async () => {
         cell.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
       });
-      expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+      expect(document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])')).toBeNull();
     } finally {
       await mounted.unmount();
     }
@@ -175,7 +181,7 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
       await act(async () => {
         cell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       });
-      const tooltip = document.body.querySelector('[role="tooltip"]') as HTMLDivElement;
+      const tooltip = document.body.querySelector('[role="tooltip"]:not([aria-hidden="true"])') as HTMLDivElement;
       expect(tooltip.style.left).toBe('148px');
       expect(tooltip.style.top).toBe('80px');
 
@@ -195,8 +201,8 @@ describe('RequestEventsDetailsCard Speed Mode column', () => {
     }
   });
 
-  it('keeps a dash for each missing request or response mode in the cell and tooltip', () => {
-    const html = renderCard([
+  it('keeps a dash for each missing request or response mode in the cell and tooltip', async () => {
+    const html = await renderCard([
       { ...baseEvent, service_tier: 'priority', response_service_tier: '' },
       { ...baseEvent, id: '102', service_tier: '', response_service_tier: 'default' },
       { ...baseEvent, id: '103', service_tier: '', response_service_tier: '' },

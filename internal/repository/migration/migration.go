@@ -110,6 +110,7 @@ const (
 	migrationAddUsageEventEffectiveServiceTier = "20261023_usage_event_effective_service_tier"
 	migrationAddPluginAPIKeySources            = "20261028_plugin_api_key_sources"
 	migrationStoredPricingConfiguration        = "20261029_stored_pricing_configuration"
+	migrationAddUsageIdentitySIWCFields        = "20261029_usage_identity_siwc_fields"
 )
 
 type schemaMigration struct {
@@ -339,6 +340,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddUsageEventEffectiveServiceTier, run: addUsageEventEffectiveServiceTierMigration},
 		{version: migrationAddPluginAPIKeySources, run: addPluginAPIKeySourcesMigration},
 		{version: migrationStoredPricingConfiguration, run: storedpricing.CreateSchema},
+		{version: migrationAddUsageIdentitySIWCFields, run: addUsageIdentitySIWCFieldsMigration},
 	}
 }
 
