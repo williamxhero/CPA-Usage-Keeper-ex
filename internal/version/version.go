@@ -1,3 +1,4 @@
 package version
 
-var Version = "dev"
+// Version is the composed {source}+{ex} identity; -ldflags -X still wins.
+var Version = generatedVersion
