@@ -2,7 +2,7 @@
 //
 // Identity: 2.1.1+1.0.1
 //
-// The part before "+" is the newest tag reachable from upstream/main; the
+// The part before "+" is the integrated baseline from upstream/main; the
 // part after it is this fork's own maintained version.
 //
 // Re-run the script after merging a source repository or after shipping
