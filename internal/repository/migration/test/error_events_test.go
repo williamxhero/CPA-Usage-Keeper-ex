@@ -8,6 +8,34 @@ import (
 
 const errorEventsMigrationVersion = "20260820_create_error_events"
 
+func TestErrorEventsMigrationPreservesLegacyRows(t *testing.T) {
+	db := openUnmigratedTestDatabase(t)
+	runOnlyMigration(t, db, errorEventsMigrationVersion)
+	// Reconstruct the pre-upgrade schema; the original migration uses the current model.
+	if db.Migrator().HasColumn(&entities.ErrorEvent{}, "UpstreamCode") {
+		if err := db.Exec("ALTER TABLE error_events DROP COLUMN upstream_code").Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Exec("INSERT INTO error_events (id, auth_index, code, body) VALUES (42, 'legacy', 'normalized', 'existing body')").Error; err != nil {
+		t.Fatal(err)
+	}
+	runOnlyMigration(t, db, "20261127_error_event_upstream_code")
+	var event entities.ErrorEvent
+	if err := db.First(&event, 42).Error; err != nil {
+		t.Fatal(err)
+	}
+	if event.AuthIndex != "legacy" || event.Code != "normalized" || event.Body != "existing body" || event.UpstreamCode != "" {
+		t.Fatalf("legacy row changed: %+v", event)
+	}
+	if err := db.Model(&event).Update("upstream_code", "invalid_prompt").Error; err != nil {
+		t.Fatalf("new column not writable: %v", err)
+	}
+	if !db.Migrator().HasIndex(&entities.ErrorEvent{}, "idx_error_events_auth_index_timestamp_id") {
+		t.Fatal("legacy query index disappeared")
+	}
+}
+
 func TestErrorEventsMigrationCreatesEveryFlattenedColumnAndQueryIndex(t *testing.T) {
 	db := openUnmigratedTestDatabase(t)
 	if err := db.Exec("CREATE TABLE legacy_sentinel (id INTEGER PRIMARY KEY)").Error; err != nil {

@@ -109,7 +109,8 @@ type cpaErrorEventPayload struct {
 	// Body 来自 CPA Error.Message 的最终回退值，是原始自由文本；API 输出时只精确删除 Identity lookup key。
 	Body string `json:"body"`
 	// Code 来自 CPA Error.Code；上游没有结构化错误码时为空字符串。
-	Code string `json:"code"`
+	Code         string          `json:"code"`
+	UpstreamCode json.RawMessage `json:"upstream_code"`
 	// Retryable 来自 CPA Error.Retryable，描述错误发生时 CPA 的重试判断。
 	Retryable bool `json:"retryable"`
 	// AuthStatus 是 MarkResult 更新完成后的凭证状态快照，不代表 Keeper 查询时的当前状态。
@@ -186,6 +187,7 @@ func decodeCPAErrorEvent(raw string, receivedAt time.Time) (entities.ErrorEvent,
 		StatusCode:         payload.StatusCode,
 		Body:               payload.Body,
 		Code:               payload.Code,
+		UpstreamCode:       allowlistedUpstreamCode(payload.UpstreamCode),
 		Retryable:          payload.Retryable,
 		AuthStatus:         payload.AuthStatus.Status,
 		AuthStatusMessage:  payload.AuthStatus.StatusMessage,
@@ -204,6 +206,21 @@ func decodeCPAErrorEvent(raw string, receivedAt time.Time) (entities.ErrorEvent,
 		mapCPAErrorQuotaSnapshot(model.Quota, &event.AuthModelQuotaExceeded, &event.AuthModelQuotaReason, &event.AuthModelQuotaNextRecoverAt, &event.AuthModelQuotaBackoffLevel)
 	}
 	return event, nil
+}
+
+func allowlistedUpstreamCode(raw json.RawMessage) string {
+	var code string
+	if json.Unmarshal(raw, &code) != nil {
+		return ""
+	}
+	switch code {
+	case "invalid_prompt", "invalid_value", "unsupported_value", "context_length_exceeded",
+		"context_too_large", "message_too_big", "string_above_max_length", "previous_response_not_found",
+		"invalid_encrypted_content", "thinking_signature_invalid":
+		return code
+	default:
+		return ""
+	}
 }
 
 func mapCPAErrorQuotaSnapshot(snapshot *cpaErrorEventQuotaSnapshot, exceeded **bool, reason **string, nextRecoverAt **time.Time, backoffLevel **int) {

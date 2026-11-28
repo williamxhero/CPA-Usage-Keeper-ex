@@ -43,7 +43,8 @@ type errorEventPayload struct {
 	// BodyTruncated 表示 BodySummary 是否因字符上限被截断。
 	BodyTruncated bool `json:"body_truncated"`
 	// Code 是 CPA 结构化错误码；上游未提供时省略。
-	Code string `json:"code,omitempty"`
+	Code         string `json:"code,omitempty"`
+	UpstreamCode string `json:"upstream_code,omitempty"`
 	// Retryable 是错误发生时 CPA 的重试判断。
 	Retryable bool `json:"retryable"`
 	// CredentialRetryAfter 是错误发生时 CPA 给出的凭证级重试时间；完整状态快照仅保存在数据库。
@@ -114,6 +115,7 @@ func mapErrorEventPayload(event entities.ErrorEvent, apiKey string) errorEventPa
 		BodySummary:          bodySummary,
 		BodyTruncated:        bodyTruncated,
 		Code:                 event.Code,
+		UpstreamCode:         event.UpstreamCode,
 		Retryable:            event.Retryable,
 		CredentialRetryAfter: formatCPAErrorOptionalTime(event.AuthNextRetryAfter),
 		ModelRetryAfter:      formatCPAErrorOptionalTime(event.AuthModelNextRetryAfter),

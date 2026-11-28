@@ -111,6 +111,7 @@ const (
 	migrationAddPluginAPIKeySources            = "20261028_plugin_api_key_sources"
 	migrationStoredPricingConfiguration        = "20261029_stored_pricing_configuration"
 	migrationAddUsageIdentitySIWCFields        = "20261029_usage_identity_siwc_fields"
+	migrationAddErrorEventUpstreamCode         = "20261127_error_event_upstream_code"
 )
 
 type schemaMigration struct {
@@ -341,6 +342,7 @@ func orderedMigrations() []databaseMigration {
 		{version: migrationAddPluginAPIKeySources, run: addPluginAPIKeySourcesMigration},
 		{version: migrationStoredPricingConfiguration, run: storedpricing.CreateSchema},
 		{version: migrationAddUsageIdentitySIWCFields, run: addUsageIdentitySIWCFieldsMigration},
+		{version: migrationAddErrorEventUpstreamCode, run: addErrorEventUpstreamCodeMigration},
 	}
 }
 

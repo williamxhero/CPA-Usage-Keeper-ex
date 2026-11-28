@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,6 +16,55 @@ import (
 	"cpa-usage-keeper/internal/service"
 	"gorm.io/gorm"
 )
+
+func TestErrorEventsRoutePreservesOnlyAllowlistedUpstreamCodes(t *testing.T) {
+	db := openAPITestDatabase(t)
+	identity := entities.UsageIdentity{AuthType: entities.UsageIdentityAuthTypeAIProvider, AuthTypeName: "apikey", Identity: "test-index", LookupKey: "sk-test-secret", Name: "test"}
+	if err := db.Create(&identity).Error; err != nil {
+		t.Fatal(err)
+	}
+	provider := service.NewErrorEventService(db)
+	router := NewRouter(nil, nil, nil, nil, AuthConfig{}, nil, "", OptionalProviders{ErrorEvents: provider})
+	for i, tc := range []struct{ name, field, want string }{
+		{"invalid_prompt", ",\"upstream_code\":\"invalid_prompt\"", "invalid_prompt"},
+		{"invalid_value", ",\"upstream_code\":\"invalid_value\"", "invalid_value"},
+		{"unsupported_value", ",\"upstream_code\":\"unsupported_value\"", "unsupported_value"},
+		{"context_length_exceeded", ",\"upstream_code\":\"context_length_exceeded\"", "context_length_exceeded"},
+		{"context_too_large", ",\"upstream_code\":\"context_too_large\"", "context_too_large"},
+		{"message_too_big", ",\"upstream_code\":\"message_too_big\"", "message_too_big"},
+		{"string_above_max_length", ",\"upstream_code\":\"string_above_max_length\"", "string_above_max_length"},
+		{"previous_response_not_found", ",\"upstream_code\":\"previous_response_not_found\"", "previous_response_not_found"},
+		{"invalid_encrypted_content", ",\"upstream_code\":\"invalid_encrypted_content\"", "invalid_encrypted_content"},
+		{"thinking_signature_invalid", ",\"upstream_code\":\"thinking_signature_invalid\"", "thinking_signature_invalid"},
+		{"unknown", ",\"upstream_code\":\"private-user-input\"", ""},
+		{"nonexact", ",\"upstream_code\":\"INVALID_PROMPT \"", ""},
+		{"missing", "", ""},
+		{"malformed", ",\"upstream_code\":42", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := time.Date(2026, 11, 27, 12, 0, i, 0, time.UTC)
+			raw := fmt.Sprintf(`{"timestamp":%q,"auth_index":"test-index","code":"normalized","body":"fixed sk-test-secret"%s}`, at.Format(time.RFC3339Nano), tc.field)
+			if err := provider.StoreErrorEvent(context.Background(), raw, at); err != nil {
+				t.Fatal(err)
+			}
+			resp := serveAPIGet(router, fmt.Sprintf("/api/v1/usage/identities/%d/errors?page_size=1", identity.ID))
+			var wire struct {
+				Events []map[string]json.RawMessage `json:"events"`
+			}
+			if err := json.Unmarshal(resp.Body.Bytes(), &wire); err != nil || resp.Code != http.StatusOK || len(wire.Events) != 1 {
+				t.Fatalf("unexpected response: %d %s (%v)", resp.Code, resp.Body, err)
+			}
+			event := wire.Events[0]
+			got, present := event["upstream_code"]
+			if (tc.want == "" && present) || (tc.want != "" && string(got) != fmt.Sprintf("%q", tc.want)) {
+				t.Errorf("upstream_code = %s (present=%v), want %q or omitted when empty", got, present, tc.want)
+			}
+			if string(event["code"]) != `"normalized"` || string(event["body_summary"]) != `"fixed [REDACTED]"` {
+				t.Errorf("existing code/body changed: %s", resp.Body)
+			}
+		})
+	}
+}
 
 type errorEventsStub struct {
 	request  service.ErrorEventListRequest

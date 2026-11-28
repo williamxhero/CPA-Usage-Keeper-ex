@@ -28,6 +28,8 @@ type ErrorEvent struct {
 	Body string
 	// Code 保存 CPA Error.Code；空字符串表示上游没有结构化错误码。
 	Code string
+	// UpstreamCode is optional allowlisted upstream evidence, independent of Code.
+	UpstreamCode string
 	// Retryable 保存 CPA Error.Retryable，表示错误发生时上游是否认为可以重试。
 	Retryable bool
 
